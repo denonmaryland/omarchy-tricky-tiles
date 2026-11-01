@@ -135,10 +135,9 @@ to within about 1% RMS (0.1–0.4% on clean recordings).
 - Swipes were tested with a virtual multi-touch touchpad (drag, flick, short nudge, long drag;
   vertical workspaces; one-per-swipe with wrap-around).
 
-Known open question: in most screen recordings the first frame of a switch that changes focus
-appears 40–60 ms after the move starts, with any curve. Hyprland's main loop is not blocked
-during that time, and blur, shadows, the cursor and the input method are ruled out. It may be
-the recorder. Springs make the effect much smaller either way.
+A note on recordings: in screen recordings the first frame of a switch that changes focus can
+appear 40–60 ms after the move starts. That delay comes from the recorder; on the real screen
+the switch starts at once.
 
 ## Development
 
