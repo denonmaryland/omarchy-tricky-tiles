@@ -17,7 +17,6 @@ so the damping ratio is exactly 1 - bounce.
 import argparse
 import fcntl
 import glob
-import hashlib
 import json
 import math
 import os
@@ -51,7 +50,8 @@ def paths(home=None):
         hypr_dir = home / '.config/hypr'
     return dict(home=home, settings=config / 'omarchy/tricky-tiles.json',
                 module=hypr_dir / 'tricky-tiles.lua',
-                hyprland=hypr_dir / 'hyprland.lua', hypr_dir=hypr_dir, state=state)
+                hyprland=hypr_dir / 'hyprland.lua', hypr_dir=hypr_dir, state=state,
+                last_load=state / 'last-load.json')
 
 
 MARK = '-- Tricky Tiles (remove via its panel)'
@@ -257,7 +257,7 @@ def module_marker(text):
 
 def module_settings(values, skip=(), marker=None):
     """Everything the Lua side needs, precomputed so the module stays simple. `skip` lists
-    the swipe directions the user's own config already takes (see conflicts); `marker` is
+    the swipe directions Hyprland refused at the last load (see reload_module); `marker` is
     the ttLoaded curve's points (new_marker)."""
     stiffness, damping = spring(values)
     dur = values['duration'] / 100   # Hyprland speeds are in tenths of a second
@@ -286,6 +286,13 @@ def render(values, skip=(), marker=None):
     return '\n'.join(head) + '\n' + TEMPLATE.read_text()
 
 
+def stand_in(marker):
+    """The module while Remove runs: it registers nothing but the ttLoaded proof."""
+    return ('-- Tricky Tiles is being removed: this stand-in registers nothing but its load proof.\n'
+            'local S = ' + lua_value(dict(loaded=list(marker))) + '\n'
+            'hl.curve("ttLoaded", { type = "bezier", points = { { S.loaded[1], S.loaded[2] }, { S.loaded[3], S.loaded[4] } } })\n')
+
+
 def module_enabled(text):
     return bool(re.search(r'^local S = \{ enabled = true\b', text or '', re.M))
 
@@ -306,6 +313,12 @@ def gesture_part(text):
         if depth == 0:
             return text[m.start():i + 1]
     return text[m.start():]
+
+
+def module_skip(text):
+    """The swipe directions a rendered module leaves to the user's config."""
+    m = re.search(r'\bskip = \{([^}]*)\}', gesture_part(text))
+    return re.findall(r'(\w+) = true', m.group(1)) if m else []
 
 
 # ---------------------------------------------------------------- system
@@ -336,6 +349,23 @@ def hypr(*args):
     return r.stdout.strip()
 
 
+_real_hypr = hypr
+
+
+def reload_and_errors():
+    """Reload and read the errors in one request. Any `hyprctl eval` or dispatch in between
+    empties Hyprland's error list, and the Omarchy shell sends those all the time, so a separate
+    `configerrors` call often finds nothing even though the red error bar just showed."""
+    if hypr is not _real_hypr:   # tests replace hypr with a fake compositor
+        hypr('reload', 'config-only')
+        return hypr('configerrors')
+    out = hypr('--batch', 'reload config-only; configerrors')
+    first, _, rest = out.partition('\n')
+    if first.strip() != 'ok':
+        raise RuntimeError(out.strip() or 'Hyprland did not reload')
+    return rest.strip('\n')
+
+
 def installed(p):
     try:
         return MARK.encode() in p['hyprland'].read_bytes()
@@ -344,120 +374,235 @@ def installed(p):
 
 
 def animations():
-    """`hyprctl animations -j`: [leaves, bezier curves]. Read-only (`hyprctl eval` would also
-    clear Hyprland's error list). None when the answer cannot be read."""
+    """`hyprctl animations -j`: [leaves, bezier curves]. None when the answer cannot be read."""
     try:
         leaves, curves = json.loads(hypr('animations', '-j'))[:2]
         if isinstance(leaves, list) and isinstance(curves, list):
             return leaves, curves
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError, RuntimeError, OSError, subprocess.SubprocessError):
+        pass   # the command that changes something reports a missing compositor itself
     return None
+
+
+def same_marker(a, b):
+    try:
+        return a is not None and b is not None and [round(x * 100) for x in a] == [round(x * 100) for x in b]
+    except TypeError:
+        return False
 
 
 def module_loaded(marker):
     """Whether this render of the module ran in Hyprland's current config. It sets the ttLoaded
-    curve to points no earlier render used; curves outlive a reload, and a reload whose
-    hyprland.lua does not parse keeps the old config running, so only these points prove it.
-    None when the answer cannot be read (a changed output format must not block every change)."""
+    curve to points no earlier render used; curves outlive a reload, and a reload Hyprland refuses
+    keeps the old config running, so only these points prove it. None when the answer cannot be
+    read (a changed output format must not block every change)."""
     found = animations()
     if found is None or marker is None:
         return None
     try:
         curve = next((c for c in found[1] if c.get('name') == 'ttLoaded'), None)
-        return curve is not None and \
-            [round(curve[k] * 100) for k in ('X0', 'Y0', 'X1', 'Y1')] == [round(v * 100) for v in marker]
+        return curve is not None and same_marker([curve[k] for k in ('X0', 'Y0', 'X1', 'Y1')], marker)
     except (LookupError, TypeError, AttributeError, ValueError):
         return None
 
 
-OUR_CURVES = ('spring:ttSpring', 'ttFade', 'ttEnter', 'ttExit')
-
-
-def module_gone():
-    """Whether no animation still uses the module's curves. A reload resets every animation,
-    so one left on ours means Hyprland kept the old config. None when it cannot be read."""
+def module_running(text):
+    """Whether Hyprland still runs this rendered module: its proof is the current ttLoaded curve
+    and, with motion on, window moves still use its spring. Curves outlive reloads, so with motion
+    off a later reload that stopped before the loader line cannot be seen here. None when the
+    answer cannot be read."""
+    proof = module_loaded(module_marker(text))
+    if proof is not True or not module_enabled(text):
+        return proof
     found = animations()
     if found is None:
         return None
     try:
-        return not any(a.get('bezier') in OUR_CURVES for a in found[0])
+        return any(a.get('name') == 'windowsMove' and a.get('bezier') == 'spring:ttSpring' for a in found[0])
     except (TypeError, AttributeError):
         return None
 
 
-# A reload whose hyprland.lua does not parse changes nothing and leaves just this error, with no
-# traceback (Lua shortens a long path with "...").
-SYNTAX_RE = re.compile(r'^(?:\S*/|\.\.\.)?hyprland\.lua:\d+: ')
-
-
-def kept_old_config(errors):
-    lines = error_lines(errors)
-    return len(lines) == 1 and bool(SYNTAX_RE.match(next(iter(lines))))
-
+# ---------------------------------------------------------------- what Hyprland reports
 
 def error_lines(text):
-    return {line.strip() for line in (text or '').split('\n') if line.strip()}
+    """`hyprctl configerrors` (or `hyprctl eval`) output as a list of lines. A Lua error with a
+    traceback spans several lines."""
+    return [line.strip() for line in (text or '').split('\n') if line.strip()]
 
 
-def config_fingerprint(p):
-    """A hash of the config Hyprland loads (finding the files like user_swipes does), without our
-    module and loader line, so remembered errors only count for the config that had them."""
-    digest = hashlib.sha256()
-    for source in config_sources(p)[0]:
-        path = source['path']
-        if path == p['module']:
-            continue
-        try:
-            data = path.read_bytes()
-        except OSError:
-            data = b'(unreadable)'
-        if path == p['hyprland']:
-            data = without_loader(data)
-        digest.update(os.fsencode(str(path)) + b'\0' + hashlib.sha256(data).digest())
-    return digest.hexdigest()
-
-
-def remembered_errors(known, fingerprint):
+def config_errors():
+    """What `hyprctl configerrors` lists now; [] when Hyprland cannot be asked. `hyprctl eval`
+    empties the list, so after a live change it only holds that change's errors."""
     try:
-        saved = json.loads(known.read_text())
-        if saved.get('config') == fingerprint:
-            return error_lines(saved.get('errors'))
-    except (OSError, ValueError, AttributeError):
-        pass
-    return set()   # another config (or an older format): forget them
+        return error_lines(hypr('configerrors'))
+    except Exception:
+        return []
 
 
-def reload_checked(loads=False, p=None):
-    """Reload and fail on any error the reload added. With `loads` the module must have run in
-    this reload; without, none of it may still run."""
-    # `hyprctl eval` (live changes) empties Hyprland's error list, so errors the config already
-    # had are remembered from the last good reload and are not blamed on Tricky Tiles, as long as
-    # the config is still the one that had them.
-    known = p['state'] / 'known-errors' if p else None
-    fingerprint = config_fingerprint(p) if p else None
-    before = error_lines(hypr('configerrors'))
-    if known:
-        before |= remembered_errors(known, fingerprint)
-    hypr('reload', 'config-only')
-    errors = hypr('configerrors')
-    if error_lines(errors) - before:
-        raise RuntimeError(errors)
-    # An error that was already in the config can stop Lua before the loader line runs, or stop
-    # the reload altogether, so check what Hyprland really runs now.
-    if loads:
-        marker = module_marker(p['module'].read_text()) if p and p['module'].exists() else None
-        if module_loaded(marker) is False:
-            raise RuntimeError('Hyprland reloaded, but Tricky Tiles did not load. An error earlier in your '
-                               'config may stop it' + (': ' + errors if errors else '.'))
-    elif p and (kept_old_config(errors) or module_gone() is False):
-        raise RuntimeError('Hyprland kept running Tricky Tiles: your config did not reload'
-                           + (': ' + errors if errors else '.'))
-    if known:
-        try:
-            atomic(known, json.dumps(dict(config=fingerprint, errors=errors)) + '\n')
-        except OSError:
-            pass
+PATH_START = ' \t"\'(@'
+
+
+def mentions(line, path, number=None):
+    """Whether an error line points at `path` as `path:<line>` (at line `number` when given).
+    Hyprland names the file in full; Lua's own messages may shorten it to "..." and its tail."""
+    path = str(path)
+    name = os.path.basename(path)
+    for m in re.finditer(re.escape(name) + r':(\d+)', line):
+        if number is not None and int(m.group(1)) != number:
+            continue
+        upto = line[:m.start() + len(name)]
+        cut = upto.rfind('...')
+        if cut >= 0 and len(upto) - cut - 3 > len(name) and path.endswith(upto[cut + 3:]):
+            return True
+        for start, ch in enumerate(upto):
+            if ch == '/' and (start == 0 or upto[start - 1] in PATH_START):
+                candidate = upto[start:]
+                if candidate == path or os.path.realpath(candidate) == os.path.realpath(path):
+                    return True
+    return False
+
+
+def loader_line(p):
+    """The number of the line in hyprland.lua that loads the module, counted like Lua does."""
+    try:
+        raw = p['hyprland'].read_bytes()
+    except OSError:
+        return None
+    i = raw.find(MARK.encode())
+    return None if i < 0 else len(re.findall(rb'\r\n|\n\r|\r|\n', raw[:i])) + 1
+
+
+# Hyprland 0.56.2 refuses a swipe that an earlier one with the same fingers and modifiers already
+# covers (the same direction, its axis, or "swipe"). hl.gesture neither raises nor returns
+# anything then: it only adds a config error naming the calling file and line
+# (TrackpadGestures.cpp addGesture, LuaBindingsConfigRules.cpp hlGesture via configError).
+REFUSAL_RE = re.compile(r'^(?P<source>.+):(?P<line>\d+): hl\.gesture: Gesture will be overshadowed by a previous '
+                        r'gesture\. Previous (?P<previous>[A-Z_]+) shadows new (?P<new>[A-Z_]+)$')
+
+
+def refusals(lines, p):
+    """Every refused swipe in the error lines: the line, the earlier swipe's direction, the refused
+    one's, and whether the refused one is ours."""
+    out = []
+    for line in lines:
+        m = REFUSAL_RE.match(line)
+        if m:
+            out.append(dict(line=line, previous=m.group('previous').lower(), new=m.group('new').lower(),
+                            ours=mentions(m.group('source') + ':' + m.group('line'), p['module'])))
+    return out
+
+
+def ours(line, p, number=None):
+    """An error Tricky Tiles caused: it names the module, or the hyprland.lua line that loads it."""
+    number = loader_line(p) if number is None else number
+    return mentions(line, p['module']) or (number is not None and mentions(line, p['hyprland'], number))
+
+
+def user_errors(lines, p):
+    """The errors that are the user's own: they never block a change, the panel only mentions them."""
+    number = loader_line(p)
+    return [line for line in lines if not ours(line, p, number)]
+
+
+def save_last_load(p, marker, skip):
+    """What Hyprland refused at the last load, tied to that render, so `state` can say it later."""
+    atomic(p['last_load'], json.dumps(dict(loaded=list(marker), skipped=list(skip))) + '\n', 0o644)
+
+
+def last_skipped(values, p, lines):
+    """Our swipe directions left to the user's config: what the last load gave up (while that
+    render is still the module) and anything Hyprland refused in its current error list."""
+    try:
+        saved = json.loads(p['last_load'].read_text())
+        text = p['module'].read_text()
+        kept = saved['skipped'] if installed(p) and same_marker(saved['loaded'], module_marker(text)) else []
+    except (OSError, ValueError, LookupError, TypeError):
+        kept = []
+    refused = [r['new'] for r in refusals(lines, p) if r['ours']]
+    return [d for d in wanted(values) if d in kept or d in refused]
+
+
+# ---------------------------------------------------------------- applying
+
+def wanted(values):
+    """The swipe directions the module registers, as Hyprland names them."""
+    if not values['swipes']:
+        return []
+    follow = values['tracking'] == 'follow'
+    out = []
+    if values['swipe_horizontal'] != 'off':
+        out += ['horizontal'] if follow else ['left', 'right']
+    if values['swipe_vertical'] != 'off':
+        out += ['vertical'] if follow else ['up', 'down']
+    return out
+
+
+NOT_LOADED = 'Hyprland reloaded, but Tricky Tiles did not load.'
+
+
+def reload_proved(p, marker, failure=NOT_LOADED):
+    """Reload, then check that the render with `marker` ran in it and that no error is ours.
+    Returns the error lines Hyprland reports."""
+    lines = error_lines(reload_and_errors())
+    if module_loaded(marker) is False:
+        raise RuntimeError(failure + ' ' + ('Hyprland reports:\n' + '\n'.join(lines) if lines
+                                            else 'An error earlier in your config may stop it.'))
+    number = loader_line(p)
+    mine = [line for line in lines if ours(line, p, number) and not REFUSAL_RE.match(line)]
+    if mine:
+        raise RuntimeError('Hyprland reported an error in Tricky Tiles:\n' + '\n'.join(mine))
+    return lines
+
+
+MAX_LOADS = 3
+
+
+def reload_module(eff, p, skip=()):
+    """Load the module with a reload and leave to the user's config every swipe Hyprland refuses
+    next to theirs. A refusal is only a config error, so the module registers every swipe but
+    `skip` (the last load's answer while the swipe settings stay the same, else nothing); the ones
+    Hyprland refused, and ours that made it refuse one of the user's later swipes, go into
+    gestures.skip for one more reload, which must come back without them. Returns the skipped
+    directions."""
+    skip, blamed, innocent = [d for d in wanted(eff) if d in skip], {}, set()
+    for _ in range(MAX_LOADS):
+        marker = new_marker()
+        atomic(p['module'], render(eff, skip, marker), 0o644)
+        lines = reload_proved(p, marker)
+        found = refusals(lines, p)
+        refused = [r['new'] for r in found if r['ours']]
+        # The message has no finger count, so ours is only blamed for a later swipe's refusal; a
+        # refusal that stays after ours stepped aside was never ours.
+        wrong = {d for d, line in blamed.items() if line in lines}
+        innocent |= wrong
+        registered = [d for d in wanted(eff) if d not in skip and d not in refused]
+        newly = {}
+        for r in found:
+            if not r['ours'] and r['previous'] in registered and r['previous'] not in innocent:
+                newly.setdefault(r['previous'], r['line'])
+        if not refused and not newly and not wrong:
+            save_last_load(p, marker, skip)
+            return skip
+        for d in wrong:
+            blamed.pop(d)
+        blamed.update(newly)
+        skip = [d for d in wanted(eff) if (d in skip or d in refused or d in newly) and d not in wrong]
+    raise RuntimeError('Hyprland kept refusing Tricky Tiles swipes:\n' + '\n'.join(r['line'] for r in found))
+
+
+def eval_module(eff, p, skip):
+    """Re-run the module in Hyprland's running Lua state: motion changes apply at once, gestures
+    stay as registered. The new render must prove it ran."""
+    marker = new_marker()
+    atomic(p['module'], render(eff, skip, marker), 0o644)
+    out = error_lines(hypr('eval', f'dofile({lua_str(p["module"])})'))
+    failed = [line for line in out if line.startswith('error')]
+    if failed:
+        raise RuntimeError('Hyprland could not apply Tricky Tiles:\n' + '\n'.join(failed))
+    if module_loaded(marker) is False:
+        raise RuntimeError('Hyprland did not run the new Tricky Tiles settings.')
+    save_last_load(p, marker, skip)
 
 
 def snapshot(*files):
@@ -495,27 +640,31 @@ def rollback(saved, reload=True):
         pass
 
 
-def apply_module(values, p):
-    """Write the module and apply it live; only gesture changes and turning off need a reload."""
+def apply_module(values, p, force=False):
+    """Write the module and apply it: live with `hyprctl eval` when only motion changes and the
+    module runs now, otherwise with a reload. Every change renders a new ttLoaded proof and checks
+    it. `force` (the apply action) always reloads and asks Hyprland afresh which swipes it refuses.
+    A change that leaves the module as it is reports "unchanged" only while module_running() says
+    Hyprland still runs that render (or cannot say); otherwise it reloads."""
     if not installed(p):
         return 'not-installed'
     eff = effective(values, p)
     old = p['module'].read_text() if p['module'].exists() else None
-    skip = skipped(eff, conflicts(eff, p))
-    if old is not None and old == render(eff, skip, module_marker(old)):
+    old_skip = module_skip(old)
+    live = None if force or old is None else module_running(old)
+    if not force and old is not None and live is not False and old == render(eff, old_skip, module_marker(old)):
         return 'unchanged'
-    new = render(eff, skip)
-    saved = snapshot(p['module'])
-    atomic(p['module'], new, 0o644)
+    saved = snapshot(p['module'], p['last_load'])
     try:
         # Leaving "everything" needs a reload: only a fresh config restores the stock
         # opening, closing, layer and border animations.
         leaving_everything = module_scope(old) == 'everything' and eff['scope'] != 'everything'
-        if eff['enabled'] and module_enabled(old) and gesture_part(old) == gesture_part(new) \
-                and not leaving_everything:
-            hypr('eval', f'dofile({lua_str(p["module"])})')
+        same_swipes = not force and old is not None and gesture_part(old) == gesture_part(render(eff, old_skip))
+        if same_swipes and live is not False and eff['enabled'] and module_enabled(old) and not leaving_everything:
+            eval_module(eff, p, old_skip)
             return 'live'
-        reload_checked(loads=True, p=p)
+        # A swipe change or Apply asks Hyprland afresh, so directions the user has since freed are taken.
+        reload_module(eff, p, old_skip if same_swipes else ())
         return 'reloaded'
     except Exception:
         rollback(saved)
@@ -551,66 +700,72 @@ def install(values, p):
     """Consent given in the panel: add the module and one marked loader line."""
     if not p['hyprland'].exists():
         raise RuntimeError(f'{p["hyprland"]} was not found, so Tricky Tiles cannot load itself')
-    saved = snapshot(p['hyprland'], p['module'])
+    saved = snapshot(p['hyprland'], p['module'], p['last_load'])
     eff = effective(values, p)
-    atomic(p['module'], render(eff, skipped(eff, conflicts(eff, p))), 0o644)
     try:
+        atomic(p['module'], render(eff), 0o644)   # in place before the loader line can run it
         if not installed(p):
             raw, mode = saved[p['hyprland']]
             stamp = time.strftime('%Y%m%d-%H%M%S')
             atomic(p['hypr_dir'] / f'hyprland.lua.bak.{stamp}-tricky-tiles', raw, mode)
             atomic(p['hyprland'], with_loader(raw))
-        reload_checked(loads=True, p=p)
+        reload_module(eff, p)
     except Exception:   # leave hyprland.lua and the module as they were
         rollback(saved)
         raise
 
 
 def uninstall(p):
-    """Remove the loader line and the module; settings stay so a reinstall remembers them."""
+    """Remove the loader line and the module; settings stay so a reinstall remembers them.
+    First a reload runs a stand-in module that registers nothing but a new proof: once that proof
+    shows, Hyprland runs none of ours, so taking the line and file out changes nothing at runtime."""
     hypr('version')   # no compositor to reload: fail before touching any file
     override_file = p['state'] / 'override'
-    saved = snapshot(p['hyprland'], p['module'], override_file)
+    saved = snapshot(p['hyprland'], p['module'], override_file, p['last_load'])
     try:
-        if saved[p['hyprland']] is not None:
+        if installed(p):
+            marker = new_marker()
+            atomic(p['module'], stand_in(marker), 0o644)
+            reload_proved(p, marker, 'Hyprland did not reload, so Tricky Tiles still runs and nothing was removed.')
             raw = saved[p['hyprland']][0]
             kept = without_loader(raw)
             if kept != raw:
                 atomic(p['hyprland'], kept)
         p['module'].unlink(missing_ok=True)
         override_file.unlink(missing_ok=True)
-        reload_checked(p=p)
-    except Exception:   # the old animations keep running, so keep the files that load them
+        p['last_load'].unlink(missing_ok=True)
+    except Exception:   # the old module keeps running, so keep the files that load it
         rollback(saved)
         raise
 
 
-# Hyprland 0.56 refuses a new swipe when an earlier one with the same fingers and modifiers
-# has the same direction, is the axis that direction lies on, or is "swipe" ("overshadowed", a
-# config error); at swipe time the first match wins (TrackpadGestures.cpp). So an earlier "left"
-# leaves our "horizontal" alone (left swipes stay theirs, right ones are ours), while an earlier
-# "horizontal" takes left, right and horizontal. The module loads after the user's config, so it
-# skips what their earlier swipes take, and what would take a swipe they register after it.
+# ---------------------------------------------------------------- hints
+# Best effort, for the panel only: the user's own swipes, found by reading the Lua files their
+# hyprland.lua loads, with file and line. What the module registers and whether a change worked
+# come from Hyprland (reload_module), never from this reading, which cannot see conditions,
+# custom package paths or anything decided at run time.
+
 SIDES = dict(left=('left',), right=('right',), up=('up',), down=('down',), horizontal=('left', 'right'),
              vertical=('up', 'down'), swipe=('left', 'right', 'up', 'down'))
-AXIS = dict(left='horizontal', right='horizontal', horizontal='horizontal', up='vertical', down='vertical',
-            vertical='vertical', swipe='swipe')
 ALIASES = dict(l='left', r='right', u='up', t='up', top='up', d='down', b='down', bottom='down',
                horiz='horizontal', vert='vertical')
 GESTURE_RE = re.compile(r'hl\.gesture\s*\(')
 BLOCK_COMMENT_RE = re.compile(r'--\[(=*)\[.*?\]\1\]', re.S)
-LOAD_RE = re.compile(r'\b(require_optional\.module|require|dofile|loadfile)\s*(?=[("\'])')
+# loadfile() only compiles a file, so it is not followed.
+LOAD_RE = re.compile(r'\b(require_optional\.module|require|dofile)\s*(?=[("\'])')
 STRING_RE = re.compile(r'\s*(["\'])((?:\\.|(?!\1).)*)\1', re.S)
 GETENV_RE = re.compile(r'os\.getenv\s*\(\s*(["\'])(\w+)\1\s*\)')
+EOL_RE = re.compile(r'\r\n|\r|\n')
 
 
-def blocks(earlier, later):
-    """Whether Hyprland refuses the later of two swipes with the same fingers (see AXIS)."""
-    return earlier in (later, AXIS[later], 'swipe')
+def lua_source(path):
+    """A Lua file's text with CR, CRLF and LF line ends all read as "\\n"."""
+    return EOL_RE.sub('\n', path.read_bytes().decode('utf-8', 'replace'))
 
 
 def strip_comments(text):
     """Blank out Lua comments, keeping line numbers (strings holding "--" are rare in configs)."""
+    text = EOL_RE.sub('\n', text)
     text = BLOCK_COMMENT_RE.sub(lambda m: '\n' * m.group(0).count('\n'), text)
     return '\n'.join(line.split('--', 1)[0] for line in text.split('\n'))
 
@@ -704,12 +859,11 @@ def path_expr(expr, env):
 
 
 def config_sources(p):
-    """The Lua files Hyprland runs, in load order: hyprland.lua, then every file a require() or
-    dofile() with a fixed path reaches, found on package.path as Hyprland sets it (the config
-    folder) and Omarchy's bootstrap extends it (~/.local/state, ~/.config, the Omarchy folder).
-    Each comes with whether it loads after the Tricky Tiles line, and hyprland.lua with that
-    line's number. When hyprland.lua cannot be read, every .lua file in its folder counts and
-    the second value says why."""
+    """The Lua files hyprland.lua probably runs, in load order (best effort): hyprland.lua, then
+    every file a require() or dofile() with a fixed path reaches, found on package.path as Hyprland
+    sets it (the config folder) and Omarchy's bootstrap extends it (~/.local/state, ~/.config, the
+    Omarchy folder). When hyprland.lua cannot be read, every .lua file in its folder counts and the
+    second value says why."""
     home, main = Path(p['home']), Path(p['hyprland'])
     folder = main.parent
     env = dict(os.environ, HOME=str(home))
@@ -720,7 +874,7 @@ def config_sources(p):
         return next((Path(os.path.normpath(c)) for c in candidates if c and os.path.isfile(c)), None)
 
     def resolve(kind, name):
-        if kind in ('dofile', 'loadfile'):
+        if kind == 'dofile':
             return [first_file(os.path.join(home, name))]   # a relative path: from HOME, where Hyprland starts
         if name.startswith(('/', './', '../', '~/')):
             base = str(home) + name[1:] if name.startswith('~/') else os.path.join(folder, name)
@@ -730,20 +884,17 @@ def config_sources(p):
         rel = name.replace('.', '/')
         return [first_file(*(t.replace('?', rel) for t in search))]
 
-    def visit(path, late):
+    def visit(path):
         if str(path) in seen:
             return
         seen.add(str(path))
-        entry = dict(path=path, late=late, cut=None)
-        files.append(entry)
+        files.append(path)
         try:
-            text = path.read_bytes().decode('utf-8', 'replace')
+            text = lua_source(path)
         except OSError:
             if path == main:
                 raise
             return   # Hyprland reports it; there is nothing to read
-        if path == main:
-            entry['cut'] = next((i for i, line in enumerate(text.split('\n'), 1) if MARK in line), None)
         code = strip_comments(text)
         for m in LOAD_RE.finditer(code):
             if code[m.end()] == '(':
@@ -754,21 +905,19 @@ def config_sources(p):
             value = path_expr(arg, env)
             if not isinstance(value, str):
                 continue
-            after = late or (entry['cut'] is not None and code.count('\n', 0, m.start()) + 1 > entry['cut'])
             for target in resolve(m.group(1), value):
                 if target is None:
                     continue
                 if m.group(1) == 'dofile' and target.match('default/hypr/bootstrap.lua'):
                     omarchy = target.parents[2]
                     search[:0] = [str(home / '.local/state/?.lua'), str(home / '.config/?.lua'), str(omarchy / '?.lua')]
-                visit(target, after)
+                visit(target)
 
     try:
-        visit(main, False)
+        visit(main)
         return files, None
     except (OSError, ValueError, RecursionError) as error:
-        everything = [dict(path=path, late=False, cut=None) for path in sorted(folder.glob('**/*.lua'))
-                      if path != p['module'] and '.bak' not in path.name]
+        everything = [path for path in sorted(folder.glob('**/*.lua')) if path != p['module'] and '.bak' not in path.name]
         reason = error.strerror if isinstance(error, OSError) else str(error)
         return everything, f'{shown(main, home)} could not be read ({reason}), so every .lua file next to it counts'
 
@@ -781,16 +930,14 @@ def shown(path, home):
         return str(path)
 
 
-def user_swipes(p):
-    """Every swipe the user's loaded Lua files register without modifiers: the sides it takes,
-    and whether it registers after the module (its loader line comes first)."""
+def user_swipes(p, sources=None):
+    """Every swipe the user's Lua files seem to register without modifiers, with the sides it takes."""
     found = []
-    for source in config_sources(p)[0]:
-        path = source['path']
+    for path in (sources or config_sources(p)[0]):
         if path == p['module']:
             continue
         try:
-            text = path.read_bytes().decode('utf-8', 'replace')
+            text = lua_source(path)
         except OSError:
             continue
         lines, code = text.split('\n'), strip_comments(text)
@@ -808,14 +955,13 @@ def user_swipes(p):
                 continue   # pinches never meet swipes
             number = code.count('\n', 0, m.start()) + 1
             found.append(dict(file=shown(path, p['home']), line=number, text=lines[number - 1].strip()[:120],
-                              fingers=fingers.group(1), direction=name, directions=list(SIDES[name]),
-                              after=source['late'] or (source['cut'] is not None and number > source['cut'])))
+                              fingers=fingers.group(1), direction=name, directions=list(SIDES[name])))
     return found
 
 
-def conflicts_by_fingers(p):
+def conflicts_by_fingers(p, sources=None):
     by = {f: [] for f in CHOICES['fingers']}
-    for swipe in user_swipes(p):
+    for swipe in user_swipes(p, sources):
         fingers = swipe.pop('fingers')
         if fingers in by:
             by[fingers].append(swipe)
@@ -823,29 +969,11 @@ def conflicts_by_fingers(p):
 
 
 def conflicts(values, p):
-    """The user's own swipes with our finger count; skipped() says which of ours they take."""
+    """The user's own swipes with our finger count, as hints."""
     return conflicts_by_fingers(p)[values['fingers']]
 
 
-def wanted(values):
-    """The swipe directions the module registers, as Hyprland names them."""
-    if not values['swipes']:
-        return []
-    follow = values['tracking'] == 'follow'
-    out = []
-    if values['swipe_horizontal'] != 'off':
-        out += ['horizontal'] if follow else ['left', 'right']
-    if values['swipe_vertical'] != 'off':
-        out += ['vertical'] if follow else ['up', 'down']
-    return out
-
-
-def skipped(values, found):
-    """Our swipe directions Hyprland would refuse next to the user's (see AXIS), or that would
-    make it refuse one of theirs that loads after ours."""
-    return [d for d in wanted(values)
-            if any(blocks(d, s['direction']) if s.get('after') else blocks(s['direction'], d) for s in found)]
-
+# ---------------------------------------------------------------- panel
 
 def demo():
     """Play one real window step and one workspace hop on the desktop, then come back."""
@@ -873,13 +1001,14 @@ def report(ok, values, p, error=None, applied=None):
     out = dict(ok=ok, values=values, presets=PRESETS, limits=LIMITS, stock=STOCK, installed=installed(p),
                override=override(p) if values['power_saver'] != 'off' else None, code=encode(values),
                monitor=monitor_info(), layout=hypr_layout(p))
-    # The user's own swipes per finger count, whether or not ours are on, and which of our
-    # directions the module leaves to them.
-    out['conflicts_by_fingers'] = conflicts_by_fingers(p)
+    # Hints: the user's own swipes per finger count, whether or not ours are on (best effort).
+    sources, out['sources_error'] = config_sources(p)
+    out['conflicts_by_fingers'] = conflicts_by_fingers(p, sources)
     out['conflicts'] = out['conflicts_by_fingers'][values['fingers']]
-    out['skipped'] = skipped(values, out['conflicts'])
-    # Set when hyprland.lua could not be followed and every .lua file was checked instead.
-    out['sources_error'] = config_sources(p)[1]
+    # From Hyprland: our directions it refused at the last load, and the user's own config errors.
+    lines = config_errors()
+    out['skipped'] = last_skipped(values, p, lines)
+    out['config_errors'] = user_errors(lines, p)
     if applied:
         out['applied'] = applied
     if error:
@@ -898,11 +1027,12 @@ def main(argv=None):
     p['state'].mkdir(parents=True, exist_ok=True)
     with (p['state'] / 'lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        (p['state'] / 'known-errors').unlink(missing_ok=True)   # from 1.0.0 previews; no longer used
         values = read(p)
         applied = None
         # One transaction: if any stage fails, every file goes back and, if Hyprland already
         # runs the new module, a reload brings the old one back.
-        files = [p['module'], p['settings'], p['state'] / 'override']
+        files = [p['module'], p['settings'], p['state'] / 'override', p['last_load']]
         saved = {}
         try:
             saved = snapshot(*files, *([p['hyprland']] if args.action == 'install' else []))
@@ -933,7 +1063,7 @@ def main(argv=None):
                     (p['state'] / 'override').unlink(missing_ok=True)
                 applied = apply_module(values, p)
             elif args.action == 'apply':
-                applied = apply_module(values, p)
+                applied = apply_module(values, p, force=True)
             elif args.action == 'install':
                 install(values, p)
                 applied = 'installed'
@@ -949,6 +1079,7 @@ def main(argv=None):
             report(False, read(p), p, error=str(error))
             raise SystemExit(1)
         report(True, values, p, applied=applied)
+
 
 if __name__ == '__main__':
     main()

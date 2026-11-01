@@ -3,7 +3,8 @@
 -- hyprland.lua, which loads it through one marked line. Hyprland re-runs it on every
 -- reload (a fresh Lua state), and the panel re-runs it with `hyprctl eval` to
 -- apply motion changes live; gestures are only registered on a fresh load. S.loaded is a
--- fresh set of curve points per render (see the end of this file).
+-- fresh set of curve points per render (see the end of this file), which the helper checks
+-- after every reload or eval.
 
 TrickyTiles = TrickyTiles or {}
 local TT = TrickyTiles
@@ -124,10 +125,12 @@ end
 -- "Follow fingers" uses Hyprland's own trackers (scroll_move for the window
 -- strip, workspace for workspaces): content moves with the fingers and the
 -- spring above finishes the move from where they lift. "One per swipe" moves
--- exactly one window or workspace when the fingers lift. Hyprland refuses a swipe
--- that an earlier one with the same fingers already covers (a config error), so the
--- helper lists in g.skip the directions that would clash with the user's own swipes
--- and those are left to them (the panel lists the lines).
+-- exactly one window or workspace when the fingers lift. Each direction is its own
+-- hl.gesture call. Hyprland refuses a swipe that an earlier one with the same fingers
+-- already covers; hl.gesture does not raise or return anything then, it only logs a
+-- config error naming this file. The helper reads those errors after a reload, puts
+-- the refused directions in g.skip and reloads once more, so they are left to the
+-- user's config and no error remains.
 function TT.register(g)
   if not g.enabled then return end
   local f = g.fingers

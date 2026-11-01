@@ -45,3 +45,10 @@ success; remembered config errors are tied to the exact config they came from; o
 config actually loads count as conflicts, using Hyprland's directional overlap rule; bare-CR
 line endings round-trip; power saver never retries a failed change in a loop; the panel
 watches the settings file under `XDG_CONFIG_HOME`.
+
+Third review pass: Tricky Tiles no longer guesses from your Lua files. It reloads and asks
+Hyprland, reading the errors in the same request as the reload (Omarchy's shell traffic empties
+Hyprland's error list moments later), skips exactly the swipe directions Hyprland refused, and
+takes them back once you free them. Only errors that point at Tricky Tiles block a change;
+others are reported. Every change, Apply included, proves it ran with fresh `ttLoaded` points,
+and Remove first reloads a do-nothing stand-in and proves that before deleting anything.

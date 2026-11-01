@@ -56,16 +56,24 @@ Nothing, until you press **Allow** in the panel. Then:
    do local d = debug.getinfo(1, "S").source:match("^@(.*/)") or os.getenv("HOME") .. "/.config/hypr/"; local p = d .. "tricky-tiles.lua"; local f = io.open(p); if f then f:close(); dofile(p) end end -- Tricky Tiles (remove via its panel)
    ```
 
-3. Settings are kept in `~/.config/omarchy/tricky-tiles.json`; a lock file and the
-   power-saver flag live in `~/.local/state/tricky-tiles/`.
+3. Settings are kept in `~/.config/omarchy/tricky-tiles.json`; a lock file, the power-saver
+   flag and `last-load.json` (which swipes Hyprland turned down at the last load) live in
+   `~/.local/state/tricky-tiles/`.
 
 No other byte of your config is edited; Remove takes out exactly what was added. It uses no `sudo`, services, downloads or binaries.
-Motion changes apply instantly with `hyprctl eval`; turning swipes on or off reloads Hyprland.
+Motion changes apply instantly with `hyprctl eval`; swipe changes reload Hyprland. Every change
+is checked: each version of the module sets a fresh marker curve, and Tricky Tiles reads it back
+from `hyprctl animations` to confirm Hyprland runs that version. Errors that are not about Tricky
+Tiles (its module or its line in `hyprland.lua`) never block a change.
 
-**Swipes you already define are left alone.** Hyprland refuses a second gesture for the same
-finger count and direction, and your own config loads first. So Tricky Tiles skips any
-direction you already use and takes the rest. The Swipes tab lists those swipes with their
-file and line, and offers the other finger count when it is free.
+**Swipes you already define are left alone.** Hyprland refuses a swipe that an earlier one with
+the same finger count already covers, and reports it as a config error. Tricky Tiles reads those
+errors after the reload, leaves the refused directions to you, and reloads once more so no error
+remains (Hyprland's error bar may show for a moment). The same goes for a swipe of yours that
+loads after Tricky Tiles and would be refused because of it. Directions you free later are taken
+at your next swipe change. The Swipes tab also lists the swipes it finds in your files, with file
+and line, and offers the other finger count when it is free; that list is a best-effort reading of
+your files, while what Tricky Tiles registers comes only from Hyprland's answer.
 
 **Dotfile managers are safe.** If `hyprland.lua` is a symlink (stow, chezmoi), Tricky Tiles
 writes through it, so the link stays a link. If Hyprland rejects a change, or the module does not
@@ -76,8 +84,10 @@ Omarchy's stock popup.
 
 ## Remove
 
-1. Open the panel, **More → Remove**. This takes the line out of `hyprland.lua`, deletes the
-   module and reloads Hyprland. Your previous motion returns.
+1. Open the panel, **More → Remove**. Hyprland first reloads with an empty stand-in module, to
+   confirm that nothing of Tricky Tiles runs any more; then the line comes out of `hyprland.lua`
+   and the module is deleted. Your previous motion and swipes return. If that reload fails,
+   nothing is removed.
 2. `omarchy plugin remove io.github.denonmaryland.tricky-tiles`
 3. Optionally delete `~/.config/omarchy/tricky-tiles.json` and `~/.local/state/tricky-tiles/`.
 

@@ -24,8 +24,16 @@ function fire()
   for _, fn in ipairs(due) do fn() end
 end
 
-hl = { curve = rec("curve"), animation = rec("animation"), gesture = rec("gesture"),
+hl = { curve = rec("curve"), animation = rec("animation"),
        dsp = { layout = function(m) return "layout:" .. m end, focus = function(t) return t end } }
+-- Like Hyprland 0.56.2, hl.gesture returns nothing and never raises, even when it refuses the
+-- swipe (it only logs "<file>:<line>: hl.gesture: ..." for the caller). The line ends with that
+-- caller, so tests can build the same message.
+function hl.gesture(spec)
+  local info = debug.getinfo(2, "Sl")
+  rec("gesture")(spec)
+  calls[#calls] = calls[#calls] .. " at " .. (info.source:gsub("^@", "")) .. ":" .. info.currentline
+end
 function hl.config(t)
   rec("config")(t)
   if t.animations and t.animations.enabled ~= nil then world.config["animations.enabled"] = t.animations.enabled end
@@ -51,6 +59,10 @@ function hl.get_window(selector)
   end
 end
 
-dofile(arg[1])
-if arg[2] == "twice" then dofile(arg[1]) elseif arg[2] then dofile(arg[2]) end
+-- The calls made before an error are printed too; the error goes to stderr with exit code 1.
+local ok, err = pcall(function()
+  dofile(arg[1])
+  if arg[2] == "twice" then dofile(arg[1]) elseif arg[2] then dofile(arg[2]) end
+end)
 for _, c in ipairs(calls) do print(c) end
+if not ok then io.stderr:write(tostring(err), "\n"); os.exit(1) end
