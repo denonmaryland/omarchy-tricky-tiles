@@ -60,7 +60,7 @@ Nothing, until you press **Allow** in the panel. Then:
    flag and `last-load.json` (which swipes Hyprland turned down at the last load) live in
    `~/.local/state/tricky-tiles/`.
 
-No other byte of your config is edited; Remove takes out exactly what was added. It uses no `sudo`, services, downloads or binaries.
+No other byte of your config is edited; Remove takes out exactly what was added. It needs no administrator rights, services, downloads or binaries.
 Motion changes apply instantly with `hyprctl eval`; swipe changes reload Hyprland. Every change
 is checked: each version of the module sets a fresh marker curve, and Tricky Tiles reads it back
 from `hyprctl animations` to confirm Hyprland runs that version. Errors that are not about Tricky
