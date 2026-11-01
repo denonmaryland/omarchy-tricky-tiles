@@ -1232,6 +1232,22 @@ class Refusals(unittest.TestCase):
         self.assertIn(dict(fingers=3, direction='left', mods='', where=self.input + ':10'), self.hl.gestures)
         self.assertEqual(r['config_errors'], [refusal(self.input + ':9', 'horizontal', 'left')])
 
+    def test_one_line_refusing_twice_is_counted(self):
+        # A loop in the user's config registers a 3- and a 4-finger left from the same line; both
+        # refusals read the same. Ours stepping aside removes one copy, so ours stays aside.
+        self.hl.before = [(4, 'horizontal', self.input + ':1')]
+        self.hl.after = [(4, 'left', self.input + ':9'), (3, 'left', self.input + ':9')]
+        r = self.main('set', 'swipes', 'true')
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(r['skipped'], ['horizontal'])
+        self.assertIn(dict(fingers=3, direction='left', mods='', where=self.input + ':9'), self.hl.gestures)
+
+    def test_a_later_action_does_not_report_old_errors(self):
+        self.hl.errors = self.input + ":3: unknown config key 'x'"
+        self.main('apply')
+        self.hl.errors, self.hl.listed = '', []
+        self.assertEqual(self.main('state')['config_errors'], [])
+
     def test_the_report_keeps_what_the_reload_saw(self):
         # The shell's eval traffic can empty the error list between the reload and the report.
         fake = self.hl

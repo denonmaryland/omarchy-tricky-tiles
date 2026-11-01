@@ -15,6 +15,7 @@ native spring wants mass, stiffness and damping:
 so the damping ratio is exactly 1 - bounce.
 """
 import argparse
+from collections import Counter
 import fcntl
 import glob
 import json
@@ -572,8 +573,9 @@ def reload_module(eff, p, skip=()):
     Hyprland refused, and ours that made it refuse one of the user's later swipes, go into
     gestures.skip for one more reload, which must come back without them. Returns the skipped
     directions."""
-    # blamed: direction -> the refusal lines put down to ours; innocent: lines shown not to be.
-    skip, blamed, innocent = [d for d in wanted(eff) if d in skip], {}, set()
+    # blamed: direction -> the refusal lines put down to ours, counted (a loop in the user's config
+    # can repeat one line); innocent: how many of each line were shown not to be ours.
+    skip, blamed, innocent = [d for d in wanted(eff) if d in skip], {}, Counter()
     for _ in range(MAX_LOADS):
         marker = new_marker()
         atomic(p['module'], render(eff, skip, marker), 0o644)
@@ -583,21 +585,28 @@ def reload_module(eff, p, skip=()):
         # The message has no finger count, so ours is only blamed for a later swipe's refusal. A
         # refusal that stays after ours stepped aside was never ours, but only that one line is
         # cleared: another refusal of the same direction may still be ours.
-        stayed = {line for put in blamed.values() for line in put if line in lines}
+        listed = Counter(lines)
+        stayed = Counter()
+        for put in blamed.values():
+            stayed |= put & listed
         innocent |= stayed
-        wrong = {d for d, put in blamed.items() if put <= stayed}
+        wrong = {d for d, put in blamed.items() if not put - stayed}
         registered = [d for d in wanted(eff) if d not in skip and d not in refused]
-        newly = {}
+        newly, spare = {}, Counter(innocent)
         for r in found:
-            if not r['ours'] and r['previous'] in registered and r['line'] not in innocent:
-                newly.setdefault(r['previous'], set()).add(r['line'])
+            if r['ours'] or r['previous'] not in registered:
+                continue
+            if spare[r['line']] > 0:   # this copy is one already shown not to be ours
+                spare[r['line']] -= 1
+                continue
+            newly.setdefault(r['previous'], Counter())[r['line']] += 1
         if not refused and not newly and not wrong:
             save_last_load(p, marker, skip)
             return skip
         for d in wrong:
             blamed.pop(d)
         for d, put in newly.items():
-            blamed.setdefault(d, set()).update(put)
+            blamed.setdefault(d, Counter()).update(put)
         skip = [d for d in wanted(eff) if (d in skip or d in refused or d in newly) and d not in wrong]
     raise RuntimeError('Hyprland kept refusing Tricky Tiles swipes:\n' + '\n'.join(r['line'] for r in found))
 
@@ -1036,6 +1045,8 @@ def main(argv=None):
     parser.add_argument('key', nargs='?')
     parser.add_argument('value', nargs='?')
     args = parser.parse_args(argv)
+    global LAST_ERRORS
+    LAST_ERRORS = None   # each action reports only what its own reload saw
     p = paths()
     p['state'].mkdir(parents=True, exist_ok=True)
     with (p['state'] / 'lock').open('w') as lock:
