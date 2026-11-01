@@ -350,20 +350,24 @@ def hypr(*args):
 
 
 _real_hypr = hypr
+LAST_ERRORS = None   # what the last reload_and_errors() saw, for this run's report
 
 
 def reload_and_errors():
     """Reload and read the errors in one request. Any `hyprctl eval` or dispatch in between
     empties Hyprland's error list, and the Omarchy shell sends those all the time, so a separate
     `configerrors` call often finds nothing even though the red error bar just showed."""
+    global LAST_ERRORS
     if hypr is not _real_hypr:   # tests replace hypr with a fake compositor
         hypr('reload', 'config-only')
-        return hypr('configerrors')
+        LAST_ERRORS = hypr('configerrors')
+        return LAST_ERRORS
     out = hypr('--batch', 'reload config-only; configerrors')
     first, _, rest = out.partition('\n')
     if first.strip() != 'ok':
         raise RuntimeError(out.strip() or 'Hyprland did not reload')
-    return rest.strip('\n')
+    LAST_ERRORS = rest.strip('\n')
+    return LAST_ERRORS
 
 
 def installed(p):
@@ -545,7 +549,10 @@ def reload_proved(p, marker, failure=NOT_LOADED):
     """Reload, then check that the render with `marker` ran in it and that no error is ours.
     Returns the error lines Hyprland reports."""
     lines = error_lines(reload_and_errors())
-    if module_loaded(marker) is False:
+    proof = module_loaded(marker)
+    if proof is None:   # no answer is not proof: keep every file as it was
+        raise RuntimeError('Hyprland reloaded, but did not say whether Tricky Tiles loaded, so nothing was kept.')
+    if proof is False:
         raise RuntimeError(failure + ' ' + ('Hyprland reports:\n' + '\n'.join(lines) if lines
                                             else 'An error earlier in your config may stop it.'))
     number = loader_line(p)
@@ -565,6 +572,7 @@ def reload_module(eff, p, skip=()):
     Hyprland refused, and ours that made it refuse one of the user's later swipes, go into
     gestures.skip for one more reload, which must come back without them. Returns the skipped
     directions."""
+    # blamed: direction -> the refusal lines put down to ours; innocent: lines shown not to be.
     skip, blamed, innocent = [d for d in wanted(eff) if d in skip], {}, set()
     for _ in range(MAX_LOADS):
         marker = new_marker()
@@ -572,21 +580,24 @@ def reload_module(eff, p, skip=()):
         lines = reload_proved(p, marker)
         found = refusals(lines, p)
         refused = [r['new'] for r in found if r['ours']]
-        # The message has no finger count, so ours is only blamed for a later swipe's refusal; a
-        # refusal that stays after ours stepped aside was never ours.
-        wrong = {d for d, line in blamed.items() if line in lines}
-        innocent |= wrong
+        # The message has no finger count, so ours is only blamed for a later swipe's refusal. A
+        # refusal that stays after ours stepped aside was never ours, but only that one line is
+        # cleared: another refusal of the same direction may still be ours.
+        stayed = {line for put in blamed.values() for line in put if line in lines}
+        innocent |= stayed
+        wrong = {d for d, put in blamed.items() if put <= stayed}
         registered = [d for d in wanted(eff) if d not in skip and d not in refused]
         newly = {}
         for r in found:
-            if not r['ours'] and r['previous'] in registered and r['previous'] not in innocent:
-                newly.setdefault(r['previous'], r['line'])
+            if not r['ours'] and r['previous'] in registered and r['line'] not in innocent:
+                newly.setdefault(r['previous'], set()).add(r['line'])
         if not refused and not newly and not wrong:
             save_last_load(p, marker, skip)
             return skip
         for d in wrong:
             blamed.pop(d)
-        blamed.update(newly)
+        for d, put in newly.items():
+            blamed.setdefault(d, set()).update(put)
         skip = [d for d in wanted(eff) if (d in skip or d in refused or d in newly) and d not in wrong]
     raise RuntimeError('Hyprland kept refusing Tricky Tiles swipes:\n' + '\n'.join(r['line'] for r in found))
 
@@ -600,8 +611,8 @@ def eval_module(eff, p, skip):
     failed = [line for line in out if line.startswith('error')]
     if failed:
         raise RuntimeError('Hyprland could not apply Tricky Tiles:\n' + '\n'.join(failed))
-    if module_loaded(marker) is False:
-        raise RuntimeError('Hyprland did not run the new Tricky Tiles settings.')
+    if module_loaded(marker) is not True:   # no answer is not proof either
+        raise RuntimeError('Hyprland did not run (or did not confirm) the new Tricky Tiles settings.')
     save_last_load(p, marker, skip)
 
 
@@ -1006,7 +1017,9 @@ def report(ok, values, p, error=None, applied=None):
     out['conflicts_by_fingers'] = conflicts_by_fingers(p, sources)
     out['conflicts'] = out['conflicts_by_fingers'][values['fingers']]
     # From Hyprland: our directions it refused at the last load, and the user's own config errors.
-    lines = config_errors()
+    # A separate configerrors call can miss what this run's reload saw (the shell's eval traffic
+    # empties the list), so use what the reload itself returned when there was one.
+    lines = error_lines(LAST_ERRORS) if LAST_ERRORS is not None else config_errors()
     out['skipped'] = last_skipped(values, p, lines)
     out['config_errors'] = user_errors(lines, p)
     if applied:

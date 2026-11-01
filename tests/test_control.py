@@ -751,7 +751,7 @@ class LineEndings(unittest.TestCase):
                'if f then f:close(); dofile(p) end end ' + control.MARK + '\n')
         home = home_with(old)
         p = control.paths(home)
-        with mock.patch.object(control, 'hypr', return_value=''):
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
             control.uninstall(p)
         self.assertEqual(p['hyprland'].read_text(), '-- user\n')
 
@@ -884,13 +884,24 @@ class ModuleLoaded(unittest.TestCase):
         self.assertFalse(control.installed(p))
         self.assertEqual(hl.leaves, [])
 
-    def test_unreadable_answer_does_not_block(self):
+    def test_an_unreadable_answer_is_not_proof(self):
+        # No answer must never pass for success: install keeps nothing, Remove deletes nothing.
         home = home_with()
         p = control.paths(home)
+        before = p['hyprland'].read_bytes()
         with mock.patch.object(control, 'hypr', return_value='not json'):
+            with self.assertRaises(RuntimeError):
+                control.install(control.fresh(), p)
+        self.assertEqual(p['hyprland'].read_bytes(), before)
+        self.assertFalse(p['module'].exists())
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
             control.install(control.fresh(), p)
-            control.uninstall(p)
-        self.assertFalse(control.installed(p))
+        installed = p['hyprland'].read_bytes()
+        with mock.patch.object(control, 'hypr', return_value='not json'):
+            with self.assertRaises(RuntimeError):
+                control.uninstall(p)
+        self.assertEqual(p['hyprland'].read_bytes(), installed)
+        self.assertTrue(p['module'].exists())
 
     def test_motion_off_is_checked_too(self):
         # The proof curve does not depend on motion, so a module stopped early is caught either way.
@@ -1208,6 +1219,36 @@ class Refusals(unittest.TestCase):
         self.assertEqual(self.ours(), ['horizontal'])
         self.assertEqual(self.reloads(), 3)
         self.assertEqual(r['config_errors'], [refusal(self.input + ':9', 'horizontal', 'left')])
+
+    def test_an_unrelated_refusal_does_not_clear_ours(self):
+        # Two refusals read the same ("Previous HORIZONTAL shadows new LEFT"): the user's own
+        # 4-finger clash, which stays, and their later 3-finger left, which ours blocks. Clearing
+        # the first must not clear the second: ours steps aside and their swipe registers.
+        self.hl.before = [(4, 'horizontal', self.input + ':1')]
+        self.hl.after = [(4, 'left', self.input + ':9'), (3, 'left', self.input + ':10')]
+        r = self.main('set', 'swipes', 'true')
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(r['skipped'], ['horizontal'])
+        self.assertIn(dict(fingers=3, direction='left', mods='', where=self.input + ':10'), self.hl.gestures)
+        self.assertEqual(r['config_errors'], [refusal(self.input + ':9', 'horizontal', 'left')])
+
+    def test_the_report_keeps_what_the_reload_saw(self):
+        # The shell's eval traffic can empty the error list between the reload and the report.
+        fake = self.hl
+        fake.errors = self.input + ':3: unknown config key \'x\''
+
+        def emptied_after_reload(*args):
+            out = fake(*args)
+            if args[0] == 'configerrors' and fake.calls[-2][0] == 'reload':
+                fake.listed = []   # someone ran hyprctl eval right after
+            return out
+        self.hl = emptied_after_reload
+        try:
+            r = self.main('apply')
+        finally:
+            self.hl = fake
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(r['config_errors'], [self.input + ":3: unknown config key 'x'"])
 
     def test_a_freed_direction_is_taken_at_the_next_swipe_change_or_apply(self):
         self.hl.before = [(3, 'horizontal', self.input + ':1')]
