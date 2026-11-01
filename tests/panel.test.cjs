@@ -89,7 +89,7 @@ test('skipped directions read as a list', () => {
 test('keyboard rows match what each tab shows, top to bottom', () => {
   const body = qml.match(/readonly property var rows: \{([\s\S]*?)\n  \}/)[1];
   const rows = (ctx) => plain(vm.runInNewContext(`(function() {${body}})()`, {
-    loaded: true, installed: true, tab: 0, skipped: [], ...ctx,
+    loaded: true, installed: true, tab: 0, skipped: [], axisLocked: false, ...ctx,
     values: { enabled: true, swipes: false, swipe_horizontal: 'windows', tracking: 'follow', ...ctx.values },
     swipeInfo: { list: [], other: '4', otherFree: false, ...ctx.swipeInfo },
     hasConflicts: !!(ctx.swipeInfo && ctx.swipeInfo.list && ctx.swipeInfo.list.length),
@@ -115,4 +115,19 @@ test('a failed reply never resyncs power saver (no retry loop)', () => {
 test('the panel watches the settings file where the helper writes it', () => {
   const qml = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
   assert.match(qml, /XDG_CONFIG_HOME[^\n]*\/omarchy\/tricky-tiles\.json/)
+})
+
+test('nothing changes before settings load, and the preview never plays while closed', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
+  const body = (name) => src.slice(src.indexOf(`function ${name}(`), src.indexOf('\n  }', src.indexOf(`function ${name}(`)))
+  assert.match(body('commit'), /if \(!loaded\) return/)
+  assert.match(body('pickPreset'), /if \(!loaded\) return/)
+  const plays = src.split('\n').filter(l => /preview\.play\(\)/.test(l))
+  // Only the open handler and playPreview itself start it directly.
+  assert.ok(plays.every(l => /function playPreview|if \(opened\)/.test(l)), plays.join('\n'))
+})
+
+test('workspace travel is locked whenever swipes move workspaces, like the helper', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
+  assert.match(src, /axisLocked: values\.swipes && \(values\.swipe_horizontal === "workspaces" \|\| values\.swipe_vertical === "workspaces"\)/)
 })

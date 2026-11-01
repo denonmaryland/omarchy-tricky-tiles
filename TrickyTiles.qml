@@ -41,6 +41,9 @@ Panel {
   property var conflicts: []
   property var conflictsByFingers: null   // {"3": [...], "4": [...]}, from newer helpers
   property var skipped: []                // directions the module left to the user's config
+  property var configErrors: []           // the user's own Hyprland config errors (not ours)
+  // With swipes moving workspaces, the slide follows the swipe direction (helper's normalize()).
+  readonly property bool axisLocked: values.swipes && (values.swipe_horizontal === "workspaces" || values.swipe_vertical === "workspaces")
   property var monitor: null
   property string code: ""
   property string overrideName: ""
@@ -106,7 +109,7 @@ Panel {
       return r
     }
     r.push("scope")
-    if (!(values.swipes && values.swipe_horizontal === "workspaces")) r.push("workspace_axis")
+    if (!axisLocked) r.push("workspace_axis")
     r.push("power_saver", "share")
     if (installed) r.push("uninstall")
     return r
@@ -143,6 +146,7 @@ Panel {
       values = Spring.withPending(result.values, pending)
       conflicts = result.conflicts || []
       conflictsByFingers = result.conflicts_by_fingers || null
+      configErrors = result.config_errors || []
       // Helpers without `skipped` only imply it: nothing skipped after an apply or with swipes off.
       if (Array.isArray(result.skipped)) skipped = result.skipped
       else if (result.applied || !values.swipes) skipped = []
@@ -177,6 +181,7 @@ Panel {
     writeProc.running = true
   }
   function commit(key, value) {
+    if (!loaded) return   // send() would drop it: never show a change that is not saved
     const d = Object.assign({}, draft); delete d[key]; draft = d
     const v = Object.assign({}, values)
     const patch = {}
@@ -184,16 +189,17 @@ Panel {
     if (key === "duration" || key === "bounce" || key === "travel" || key === "focus_fade") { v[key] = value; patch.enabled = true; patch.preset = matching(v) }
     values = Object.assign(v, patch)
     send(["set", key, String(value)], patch)
-    if (key !== "power_saver" && key !== "preview_windows") preview.play()
+    if (key !== "power_saver" && key !== "preview_windows") playPreview()
   }
   function pickPreset(id) {
+    if (!loaded) return
     const p = presets[id]
     if (!p) return
     draft = {}
     const patch = {enabled: true, preset: id, duration: p.duration, bounce: p.bounce, travel: p.travel, focus_fade: p.focus_fade}
     values = Object.assign({}, values, patch)
     send(["preset", id], patch)
-    preview.play()
+    playPreview()
   }
   function matching(v) {
     for (var i = 0; i < presetOrder.length; i++) {
@@ -298,7 +304,7 @@ Panel {
     else if (cursor === "preview_windows") commit("preview_windows", !values.preview_windows)
     else if (cursor === "use_fingers") useOtherFingers()
     else if (cursor === "presets" && !(values.enabled && values.preset === presetOrder[presetIndex()])) pickPreset(presetOrder[presetIndex()])
-    else if (tab === 0) preview.play()
+    else if (tab === 0) playPreview()
   }
   function textKey(t) {
     if (t >= "1" && t <= "3") showTab(Number(t) - 1)
@@ -307,7 +313,8 @@ Panel {
   }
   function allowInstall() { notice = ""; send(["install"]) }
   // Keys can't hold, so Enter plays stock Omarchy once and the preview returns to yours.
-  function compareStock() { comparing = true; preview.play(); compareOnce = true }
+  function playPreview() { if (opened) preview.play() }   // IPC calls arrive while closed too
+  function compareStock() { comparing = true; playPreview(); compareOnce = true }
   function useOtherFingers() {
     const other = swipeInfo.other
     commit("fingers", other)
@@ -342,8 +349,8 @@ Panel {
       root.commit(key, bools.indexOf(key) >= 0 ? value === "true" : texts.indexOf(key) >= 0 ? value : Number(value))
     }
     function showTab(index: int): void { root.showTab(index) }
-    function replay(): void { root.preview.play() }
-    function compare(on: bool): void { root.comparing = on; root.preview.play() }
+    function replay(): void { root.playPreview() }
+    function compare(on: bool): void { root.comparing = on; root.playPreview() }
     // For testing the stock look on a desktop that has the glass host installed.
     function useHost(kind: string): string {
       root.close()
@@ -379,7 +386,7 @@ Panel {
       onStreamFinished: {
         // Same pattern as CODE_RE in helpers/control.py.
         const pasted = (text || "").trim()
-        if (/^TT1-\d{2,3}-\d{1,2}-\d{1,3}-[01]$/.test(pasted)) { root.send(["import", pasted]); root.notice = "Applied " + pasted; root.preview.play() }
+        if (/^TT1-\d{2,3}-\d{1,2}-\d{1,3}-[01]$/.test(pasted)) { root.send(["import", pasted]); root.notice = "Applied " + pasted; root.playPreview() }
         else root.notice = "The clipboard has no Tricky Tiles code"
       }
     }
@@ -945,11 +952,17 @@ Panel {
           Segmented {
             objectName: "row:workspace_axis"
             width: parent.width
-            enabled: !(root.values.swipes && root.values.swipe_horizontal === "workspaces")
+            enabled: !root.axisLocked
             model: root.choices.workspace_axis
             current: root.values.workspace_axis
             focusRing: root.cursor === "workspace_axis"
             onPicked: function(id) { root.commit("workspace_axis", id) }
+          }
+          Text {
+            visible: root.axisLocked
+            width: parent.width; wrapMode: Text.WordWrap
+            text: "Set by your workspace swipes: workspaces slide the way you swipe."
+            color: root.alphaOf(root.fg, 0.5); font.family: root.family; font.pixelSize: Style.font.caption
           }
           Label { text: "On power saver, switch to" }
           Segmented {
@@ -959,6 +972,14 @@ Panel {
             current: root.values.power_saver
             focusRing: root.cursor === "power_saver"
             onPicked: function(id) { root.commit("power_saver", id) }
+          }
+          Text {
+            // Not ours, but worth knowing: Hyprland lists errors elsewhere in the user's config.
+            visible: root.configErrors.length > 0
+            width: parent.width; wrapMode: Text.WordWrap
+            text: "Your Hyprland config has " + (root.configErrors.length === 1 ? "an error" : root.configErrors.length + " errors")
+                  + " outside Tricky Tiles: " + root.configErrors[0]
+            color: root.alphaOf(root.fg, 0.5); font.family: root.family; font.pixelSize: Style.font.caption
           }
           Label { text: "Share your motion" }
           Item {

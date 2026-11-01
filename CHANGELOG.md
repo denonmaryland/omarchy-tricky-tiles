@@ -52,3 +52,9 @@ Hyprland's error list moments later), skips exactly the swipe directions Hyprlan
 takes them back once you free them. Only errors that point at Tricky Tiles block a change;
 others are reported. Every change, Apply included, proves it ran with fresh `ttLoaded` points,
 and Remove first reloads a do-nothing stand-in and proves that before deleting anything.
+
+Release polish: nothing in the panel changes before its settings load; the preview never plays
+while the panel is closed; "Workspaces travel" is locked, with a reason, whenever swipes move
+workspaces; the panel mentions errors elsewhere in your Hyprland config. Checked on Omarchy's
+stock bar (added with `omarchy plugin enable`) and stock popup, in Tokyo Night and Catppuccin
+Latte. New preview.png from the stock popup.
