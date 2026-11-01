@@ -9,7 +9,8 @@
   consent, with a backup), and `$XDG_STATE_HOME/tricky-tiles/` (lock and power-saver flag).
 - `hypr/module.lua` is the Lua body; `helpers/control.py` prepends the settings table. Motion
   changes apply live with `hyprctl eval`; gesture changes need a reload (gestures register once
-  per Lua state, and the first registered gesture for a finger count/direction wins).
+  per Lua state; Hyprland refuses a gesture that overlaps an earlier one with the same fingers
+  and modifiers, so the module skips directions the user already defines).
 - Run all checks before a release: `python3 -m unittest discover -s tests`,
   `node --test tests/*.cjs`, `omarchy plugin validate .`.
 - `tools/` holds the measurement harness (60 fps capture, spring fitting, a virtual touchpad).

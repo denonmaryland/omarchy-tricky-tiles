@@ -5,13 +5,11 @@ keep their momentum when you interrupt them, and settle, instead of jumping most
 way in the first frame. Pick a preset, tune it with three sliders, and let three-finger
 swipes follow your fingers.
 
-![Before and after: a full-width window switch at 4× slow motion](docs/before-after-windows.gif)
-
-![Workspace switch: full slide vs. lift and fade](docs/before-after-workspaces.gif)
-
-![The panel: Motion, Swipes and More](docs/panel-tabs.png)
+![Three-finger swipes: up to the next workspace, through its windows and around, back down](docs/demo-workspaces.webp)
 
 ## What it does
+
+![Opening Tricky Tiles from the bar, dragging Bounce, picking presets and stepping through the tabs](docs/demo-panel.webp)
 
 - **Presets, drawn as their curves**: Spring (default), Glide (no overshoot), Snappy,
   Lively (a visible bounce that settles) and Reduced (least motion).
@@ -31,6 +29,10 @@ swipes follow your fingers.
 - **Works from the keyboard**: Up/Down move between rows, Left/Right change the focused value,
   Enter or Space activates it, and `1`/`2`/`3` (or `[`/`]`) switch tabs.
 
+![One window per swipe with wrap-around: past the last window, the first comes round again](docs/demo-carousel.webp)
+
+![The panel: Motion, Swipes and More](docs/panel-tabs.png)
+
 ## Install
 
 ```bash
@@ -45,28 +47,29 @@ Lua Hyprland config and **Hyprland 0.56 or newer** (native spring curves), Pytho
 
 Nothing, until you press **Allow** in the panel. Then:
 
-1. `~/.config/hypr/tricky-tiles.lua` is written (the generated module).
-2. One marked line is appended to `~/.config/hypr/hyprland.lua`; a timestamped backup
-   `hyprland.lua.bak.<time>-tricky-tiles` is kept next to it:
+1. `tricky-tiles.lua` is written next to your `hyprland.lua` (the generated module), in
+   `$XDG_CONFIG_HOME/hypr/` or `~/.config/hypr/`, wherever Hyprland reads its config.
+2. One marked line is appended to `hyprland.lua`, in the file's own line-ending style; an
+   exact timestamped backup `hyprland.lua.bak.<time>-tricky-tiles` is kept next to it:
 
    ```lua
-   do local p = os.getenv("HOME") .. "/.config/hypr/tricky-tiles.lua"; local f = io.open(p); if f then f:close(); dofile(p) end end -- Tricky Tiles (remove via its panel)
+   do local d = debug.getinfo(1, "S").source:match("^@(.*/)") or os.getenv("HOME") .. "/.config/hypr/"; local p = d .. "tricky-tiles.lua"; local f = io.open(p); if f then f:close(); dofile(p) end end -- Tricky Tiles (remove via its panel)
    ```
 
 3. Settings are kept in `~/.config/omarchy/tricky-tiles.json`; a lock file and the
    power-saver flag live in `~/.local/state/tricky-tiles/`.
 
-No other line in your config is edited. It uses no `sudo`, services, downloads or binaries.
+No other byte of your config is edited; Remove takes out exactly what was added. It uses no `sudo`, services, downloads or binaries.
 Motion changes apply instantly with `hyprctl eval`; turning swipes on or off reloads Hyprland.
 
-**Swipes you already define come first.** Hyprland uses the first gesture registered for a
-finger count and direction, and your own config loads before Tricky Tiles. If you already
-have three-finger swipes, the Swipes tab lists the exact file and line. Comment them out, or
-switch Tricky Tiles to four fingers.
+**Swipes you already define are left alone.** Hyprland refuses a second gesture for the same
+finger count and direction, and your own config loads first. So Tricky Tiles skips any
+direction you already use and takes the rest. The Swipes tab lists those swipes with their
+file and line, and offers the other finger count when it is free.
 
 **Dotfile managers are safe.** If `hyprland.lua` is a symlink (stow, chezmoi), Tricky Tiles
-writes through it, so the link stays a link. If Hyprland rejects a change, the previous files
-come back and your saved settings are left as they were.
+writes through it, so the link stays a link. If Hyprland rejects a change, or the module does not
+load, the previous files come back and your saved settings are left as they were.
 
 The frosted popup is used only alongside the separate `denon.bar` plugin; everyone else gets
 Omarchy's stock popup.
@@ -109,6 +112,10 @@ that arrive well under 300 ms.
 Every preset was recorded at 60 fps on a real compositor, with an edge tracked frame by frame
 and fitted to the spring model (`tools/`). The recorded moves match the spring the panel shows
 to within about 1% RMS (0.1–0.4% on clean recordings).
+
+![Before and after: a full-width window switch at 4× slow motion](docs/before-after-windows.gif)
+
+![Workspace switch: full slide vs. lift and fade](docs/before-after-workspaces.gif)
 
 - With a front-loaded ease-out curve, the first moving frame of a full-width switch on a
   60 Hz panel covered 50–70% of the distance (up to about 1,300 px in one frame). With the

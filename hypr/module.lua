@@ -1,6 +1,6 @@
 -- Tricky Tiles module body. helpers/control.py prepends `local S = { ... }` (the
--- current settings) and writes the result to ~/.config/hypr/tricky-tiles.lua,
--- which hyprland.lua loads through one marked line. Hyprland re-runs it on every
+-- current settings) and writes the result to tricky-tiles.lua next to the user's
+-- hyprland.lua, which loads it through one marked line. Hyprland re-runs it on every
 -- reload (a fresh Lua state), and the panel re-runs it with `hyprctl eval` to
 -- apply motion changes live; gestures are only registered on a fresh load.
 
@@ -81,8 +81,10 @@ function TT.step(direction)
   if active.address ~= edge.address then layout("focus " .. direction); return end
 
   local far = direction == "l" and windows[#windows] or windows[1]
-  local mon = hl.get_active_monitor()
-  local left, right = mon.x, mon.x + mon.width / mon.scale
+  local mon = active.monitor or hl.get_active_monitor()
+  -- width and height are the mode's; transforms 1, 3, 5 and 7 turn the panel a quarter.
+  local span = (mon.transform or 0) % 2 == 1 and mon.height or mon.width
+  local left, right = mon.x, mon.x + span / mon.scale
   if far.at.x + far.size.x > left and far.at.x < right then
     focus_window(far.address)   -- whole strip visible: just move focus across
     return
@@ -106,8 +108,10 @@ function TT.step(direction)
   TT.pending = hl.timer(function()
     TT.pending = nil
     restore()
-    local current = hl.get_active_workspace()
-    if current and current.id == workspace then focus_window(far.address) end
+    -- Still on the strip's workspace (special ones included, which the monitor's active
+    -- workspace never is): let the far window slide in.
+    local current = hl.get_active_window()
+    if current and current.workspace and current.workspace.id == workspace then focus_window(far.address) end
   end, { timeout = WARP_MS, type = "oneshot" })
 end
 
@@ -119,38 +123,45 @@ end
 -- "Follow fingers" uses Hyprland's own trackers (scroll_move for the window
 -- strip, workspace for workspaces): content moves with the fingers and the
 -- spring above finishes the move from where they lift. "One per swipe" moves
--- exactly one window or workspace when the fingers lift. The first gesture
--- registered for a finger count and direction wins, so swipes the user already
--- defines elsewhere in their config take precedence (the panel lists them).
+-- exactly one window or workspace when the fingers lift. Hyprland refuses a swipe
+-- that an earlier one with the same fingers already covers (a config error), and
+-- the user's config loads first, so the helper lists the directions they already
+-- use in g.skip and those are left to them (the panel lists the lines).
 function TT.register(g)
   if not g.enabled then return end
   local f = g.fingers
+  local skip = g.skip or {}
+  local function gesture(spec)
+    if not skip[spec.direction] then hl.gesture(spec) end
+  end
   if g.tracking == "follow" then
-    hl.config({ gestures = {
+    -- Leave the user's own swipe tuning alone when all of ours are skipped.
+    local any = (g.horizontal ~= "off" and not skip.horizontal) or (g.vertical == "workspaces" and not skip.vertical)
+    if any then hl.config({ gestures = {
       workspace_swipe_distance = g.ws_distance, workspace_swipe_cancel_ratio = 0.3,
       workspace_swipe_min_speed_to_force = 20, workspace_swipe_use_r = true,
       workspace_swipe_direction_lock = true, scrolling = { move_snap_to_grid = true },
-    } })
+    } }) end
     if g.horizontal == "windows" then
-      hl.gesture({ fingers = f, direction = "horizontal", action = "scroll_move", scale = g.scale })
+      gesture({ fingers = f, direction = "horizontal", action = "scroll_move", scale = g.scale })
     elseif g.horizontal == "workspaces" then
-      hl.gesture({ fingers = f, direction = "horizontal", action = "workspace" })
+      gesture({ fingers = f, direction = "horizontal", action = "workspace" })
     end
     if g.vertical == "workspaces" then
-      hl.gesture({ fingers = f, direction = "vertical", action = "workspace" })
+      gesture({ fingers = f, direction = "vertical", action = "workspace" })
     end
   else
     -- Natural direction: swipe left to reveal what is on the right.
     if g.horizontal == "windows" then
-      hl.gesture({ fingers = f, direction = "left", action = function() TT.step("r") end })
-      hl.gesture({ fingers = f, direction = "right", action = function() TT.step("l") end })
+      gesture({ fingers = f, direction = "left", action = function() TT.step("r") end })
+      gesture({ fingers = f, direction = "right", action = function() TT.step("l") end })
     elseif g.horizontal == "workspaces" then
-      hl.gesture({ fingers = f, direction = "left", action = function() workspace_step(1) end })
-      hl.gesture({ fingers = f, direction = "right", action = function() workspace_step(-1) end })
+      gesture({ fingers = f, direction = "left", action = function() workspace_step(1) end })
+      gesture({ fingers = f, direction = "right", action = function() workspace_step(-1) end })
     end
     if g.vertical == "workspaces" then
-      hl.gesture({ fingers = f, direction = "up", action = function() workspace_step(1) end })
-      hl.gesture({ fingers = f, direction = "down", action = function() workspace_step(-1) end })
+      gesture({ fingers = f, direction = "up", action = function() workspace_step(1) end })
+      gesture({ fingers = f, direction = "down", action = function() workspace_step(-1) end })
     end
   end
 end

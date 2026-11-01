@@ -16,5 +16,6 @@ KeyboardPanel {
   contentWidth: host.fittedContentWidth(Style.space(400))
   contentHeight: host.fittedContentHeight(tiles ? tiles.contentImplicitHeight : 0, Style.space(820))
 
-  Item { id: slotItem; anchors.fill: parent; clip: true }
+  // No clip here: the content scrolls and clips itself, slightly outside the slot.
+  Item { id: slotItem; anchors.fill: parent }
 }

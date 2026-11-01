@@ -27,3 +27,14 @@ install or change left files or saved settings out of step with Hyprland; leavin
 kept its animations until the next reload; symlinked `hyprland.lua` was replaced by a copy;
 multi-line swipes in your config went undetected; a trackpad scroll over a slider jumped it to
 the end; changes sent in the same moment could be dropped; the Fingers control hung below the Swipes card.
+
+Fixed after an independent review (Codex, 2026-10-31): swipes you already define are skipped
+instead of making Hyprland refuse the config, and the panel shows them with a one-click switch
+to the free finger count; every change, Remove included, is one transaction that puts files
+and the running desktop back if any step fails, and install checks the module really loaded;
+`XDG_CONFIG_HOME` is honoured; install and Remove keep `hyprland.lua` byte for byte (CRLF,
+trailing blank lines); the carousel wraps correctly on special workspaces and rotated
+monitors; "Up and down" no longer snaps back while swipes are off; paths with quotes no longer
+break live changes; the panel scrolls on short screens; Compare, Try it and the windows toggle
+are reachable by keyboard; controls no longer snap back while changes queue; Remove asks twice;
+demo media are WebP (5 MB instead of 13 MB).
