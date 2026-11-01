@@ -104,3 +104,15 @@ test('keyboard rows match what each tab shows, top to bottom', () => {
   assert.deepEqual(rows({ tab: 1, installed: false }), ['enabled', 'allow', 'tabs']);
   assert.deepEqual(rows({ tab: 2 }), ['enabled', 'tabs', 'scope', 'workspace_axis', 'power_saver', 'share', 'uninstall']);
 });
+
+test('a failed reply never resyncs power saver (no retry loop)', () => {
+  const qml = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
+  const receive = qml.slice(qml.indexOf('function receive('), qml.indexOf('function send('))
+  assert.match(receive, /if \(result\.ok\) syncPower\(\)/)
+  assert.doesNotMatch(receive.replace(/if \(result\.ok\) syncPower\(\)/, ''), /syncPower\(\)/)
+})
+
+test('the panel watches the settings file where the helper writes it', () => {
+  const qml = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
+  assert.match(qml, /XDG_CONFIG_HOME[^\n]*\/omarchy\/tricky-tiles\.json/)
+})

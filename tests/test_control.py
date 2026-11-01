@@ -16,18 +16,63 @@ sys.path.insert(0, str(ROOT / 'helpers'))
 import control  # noqa: E402
 
 
-# `hyprctl animations -j` once the module has run: only it names the ttSpring curve.
-LOADED = json.dumps([[{'name': 'windowsMove', 'bezier': 'spring:ttSpring'}], []])
-NOT_LOADED = json.dumps([[{'name': 'windowsMove', 'bezier': 'default'}], []])
+BOOTSTRAP = 'dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/hypr/bootstrap.lua")\n'
+USER_CONFIG = '-- user config\n' + BOOTSTRAP + 'require("hypr.input")\n'
+# A stand-in for /usr/share/omarchy, so tests never read the installed one.
+OMARCHY = Path(tempfile.mkdtemp())
 
 
-def home_with(hyprland='-- user config\nrequire("hypr.input")\n', files=None):
+def setUpModule():
+    (OMARCHY / 'default/hypr').mkdir(parents=True)
+    (OMARCHY / 'default/hypr/bootstrap.lua').write_text('-- sets package.path\n')
+    patcher = mock.patch.dict(os.environ, {'OMARCHY_PATH': str(OMARCHY)})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
+class FakeHyprland:
+    """Answers hyprctl like Hyprland 0.56: a reload resets every animation and runs hyprland.lua,
+    which runs the module while it has the loader line; curves outlive reloads. With `parses`
+    off hyprland.lua has a syntax error, so a reload changes nothing; with `runs` off an error
+    earlier in the config stops Lua before the loader line."""
+
+    def __init__(self, p=None, errors='', runs=True, parses=True):
+        self.p, self.errors, self.runs, self.parses = p, errors, runs, parses
+        self.calls, self.leaves, self.curves = [], [], {}
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        module = self.p and self.p['module']
+        if args[0] == 'reload' and self.parses:
+            self.leaves = []
+            if self.runs and control.installed(self.p) and module.exists():
+                self.run(module.read_text())
+        elif args[0] == 'eval' and 'dofile' in args[1] and module.exists():
+            self.run(module.read_text())
+        elif args[0] == 'animations':
+            curves = [dict(name=n, X0=round(a, 2), Y0=round(b, 2), X1=round(c, 2), Y1=round(d, 2))
+                      for n, (a, b, c, d) in self.curves.items()]
+            return json.dumps([self.leaves, curves])
+        elif args[0] == 'configerrors':
+            return self.errors
+        return ''
+
+    def run(self, text):
+        if control.module_enabled(text):
+            self.leaves = [dict(name='windowsMove', bezier='spring:ttSpring')]
+        marker = control.module_marker(text)
+        if marker:   # a module rendered before the proof curve has none
+            self.curves['ttLoaded'] = marker
+
+
+def home_with(hyprland=USER_CONFIG, files=None):
     tmp = Path(tempfile.mkdtemp())
     (tmp / '.config/hypr').mkdir(parents=True)
     (tmp / '.config/omarchy').mkdir(parents=True)
     if hyprland is not None:
         (tmp / '.config/hypr/hyprland.lua').write_text(hyprland)
     for name, text in (files or {}).items():
+        (tmp / '.config/hypr' / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp / '.config/hypr' / name).write_text(text)
     return tmp
 
@@ -145,7 +190,21 @@ class Module(unittest.TestCase):
 
     def test_off_registers_nothing(self):
         calls = self.run_lua(self.render(enabled=False))
-        self.assertFalse(any(c.startswith(('animation', 'curve', 'gesture')) for c in calls))
+        self.assertFalse(any(c.startswith(('animation', 'gesture')) for c in calls))
+        self.assertEqual([c.split(' ')[1] for c in calls if c.startswith('curve')], ['ttLoaded'])   # the proof only
+
+    def test_each_render_proves_itself_with_new_points(self):
+        v = control.fresh()
+        a, b = control.render(v), control.render(v)
+        self.assertNotEqual(control.module_marker(a), control.module_marker(b))
+        self.assertEqual(control.render(v, marker=control.module_marker(a)), a)
+        marker = control.module_marker(a)
+        self.assertTrue(all(-1 <= x <= 2 and abs(round(x * 100) - x * 100) < 1e-9 for x in marker))
+        path = Path(tempfile.mkdtemp()) / 'tricky-tiles.lua'
+        path.write_text(a)
+        curve, = [c for c in self.run_lua(path) if c.startswith('curve ttLoaded')]
+        self.assertEqual(curve, 'curve ttLoaded {points={1={1=%r,2=%r},2={1=%r,2=%r}},type=bezier}' % tuple(marker))
+        self.assertTrue(self.run_lua(path)[-1].startswith('curve ttLoaded'))   # last: the module ran to the end
 
     def test_follow_gestures(self):
         calls = self.run_lua(self.render(swipes=True, swipe_horizontal='windows', swipe_vertical='workspaces', workspace_axis='vertical'))
@@ -168,14 +227,15 @@ class Module(unittest.TestCase):
 
 class Install(unittest.TestCase):
     def setUp(self):
-        self.calls = []
-        patcher = mock.patch.object(control, 'hypr', side_effect=self.fake_hypr)
+        self.hl = FakeHyprland()
+        self.calls = self.hl.calls
+        patcher = mock.patch.object(control, 'hypr', side_effect=self.hl)
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    def fake_hypr(self, *args):
-        self.calls.append(args)
-        return LOADED if args[0] == 'animations' else ''
+        real = control.paths
+        paths = mock.patch.object(control, 'paths', side_effect=lambda home=None: setattr(self.hl, 'p', real(home)) or self.hl.p)
+        paths.start()
+        self.addCleanup(paths.stop)
 
     def test_install_adds_one_line_and_backup(self):
         home = home_with()
@@ -183,7 +243,7 @@ class Install(unittest.TestCase):
         control.install(control.fresh(), p)
         text = p['hyprland'].read_text()
         self.assertEqual(text.count(control.MARK), 1)
-        self.assertTrue(text.startswith('-- user config\nrequire("hypr.input")\n'))
+        self.assertTrue(text.startswith(USER_CONFIG))
         self.assertTrue(p['module'].exists())
         self.assertEqual(len(list(p['hypr_dir'].glob('hyprland.lua.bak.*-tricky-tiles'))), 1)
         control.install(control.fresh(), p)   # idempotent
@@ -191,7 +251,7 @@ class Install(unittest.TestCase):
         self.assertIn(('reload', 'config-only'), self.calls)
 
     def test_uninstall_restores_file(self):
-        original = '-- user config\nrequire("hypr.input")\n'
+        original = USER_CONFIG
         home = home_with(original)
         p = control.paths(home)
         control.install(control.fresh(), p)
@@ -220,7 +280,7 @@ class Install(unittest.TestCase):
         self.assertEqual(control.apply_module(v, p), 'unchanged')
 
     def test_failed_install_leaves_files_as_they_were(self):
-        original = '-- user config\nrequire("hypr.input")\n'
+        original = USER_CONFIG
         home = home_with(original)
         p = control.paths(home)
 
@@ -334,21 +394,104 @@ class Conflicts(unittest.TestCase):
         self.assertEqual(control.conflicts(control.fresh(), control.paths(home)), [])
 
 
+class LoadedFiles(unittest.TestCase):
+    """Only files Hyprland really runs count: hyprland.lua and what it loads, found like Hyprland
+    and Omarchy's bootstrap find them."""
+
+    GESTURE = 'hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })\n'
+
+    def test_an_unused_file_does_not_count(self):
+        home = home_with(files={'input.lua': '-- no swipes\n', 'profiles/laptop.lua': self.GESTURE,
+                                'old-input.lua': self.GESTURE})
+        self.assertEqual(control.conflicts(control.fresh(), control.paths(home)), [])
+
+    def test_follows_require_and_dofile(self):
+        omarchy_file = OMARCHY / 'default/hypr/tt_swipes.lua'
+        omarchy_file.write_text(self.GESTURE)
+        self.addCleanup(omarchy_file.unlink)
+        hyprland = (USER_CONFIG + 'require("default.hypr.tt_swipes")\n'
+                    'require "hypr.extra"\n'
+                    'dofile(os.getenv("HOME") .. "/.config/hypr/by-path.lua")\n'
+                    'local name = "hypr.dynamic"; require(name)\n'
+                    '-- require("hypr.commented")\n')
+        home = home_with(hyprland, files={
+            'input.lua': 'require("nested")\n',   # the config folder's nested/init.lua
+            'nested/init.lua': self.GESTURE,
+            'extra.lua': self.GESTURE,
+            'by-path.lua': self.GESTURE,
+            'dynamic.lua': self.GESTURE,
+            'commented.lua': self.GESTURE})
+        p = control.paths(home)
+        found = control.conflicts(control.fresh(), p)
+        self.assertEqual([f['file'] for f in found], [
+            '.config/hypr/nested/init.lua', str(omarchy_file), '.config/hypr/extra.lua', '.config/hypr/by-path.lua'])
+        sources = [s['path'] for s in control.config_sources(p)[0]]
+        self.assertIn(OMARCHY / 'default/hypr/bootstrap.lua', sources)
+        self.assertEqual(control.config_sources(p)[1], None)
+
+    def test_explicit_paths_and_wildcards(self):
+        # Hyprland reads a require() starting with / ./ ../ or ~/ as a path, from hyprland.lua's folder.
+        home = home_with('require("./extras/*.lua")\nrequire("~/.config/hypr/own")\n', files={
+            'extras/a.lua': self.GESTURE, 'extras/b.lua': self.GESTURE, 'own.lua': self.GESTURE})
+        found = control.conflicts(control.fresh(), control.paths(home))
+        self.assertEqual([f['file'] for f in found],
+                         ['.config/hypr/extras/a.lua', '.config/hypr/extras/b.lua', '.config/hypr/own.lua'])
+
+    def test_without_the_bootstrap_hyprland_looks_in_its_folder(self):
+        # Hyprland's own package.path is the config folder, so "hypr.input" is hypr/hypr/input.lua.
+        home = home_with('require("input")\nrequire("hypr.input")\n', files={'input.lua': self.GESTURE})
+        self.assertEqual([f['line'] for f in control.conflicts(control.fresh(), control.paths(home))], [1])
+
+    def test_unreadable_hyprland_lua_falls_back_and_says_so(self):
+        home = home_with(None, files={'profile.lua': self.GESTURE})
+        p = control.paths(home)
+        out = io.StringIO()
+        with mock.patch.object(control, 'hypr', return_value=''), contextlib.redirect_stdout(out):
+            control.report(True, control.fresh(), p)
+        r = json.loads(out.getvalue())
+        self.assertEqual([c['file'] for c in r['conflicts']], ['.config/hypr/profile.lua'])
+        self.assertIn('every .lua file', r['sources_error'])
+        home = home_with()
+        out = io.StringIO()
+        with mock.patch.object(control, 'hypr', return_value=''), contextlib.redirect_stdout(out):
+            control.report(True, control.fresh(), control.paths(home))
+        self.assertIsNone(json.loads(out.getvalue())['sources_error'])
+
+    def test_path_expressions(self):
+        env = {'HOME': '/h', 'OMARCHY_PATH': '/o', 'EMPTY': ''}
+        cases = {
+            '"/a.lua"': '/a.lua',
+            "'/a.lua'": '/a.lua',
+            '(os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/b.lua"': '/o/b.lua',
+            '(os.getenv("UNSET") or "/usr/share/omarchy") .. "/b.lua"': '/usr/share/omarchy/b.lua',
+            '(os.getenv("EMPTY") or "/x") .. "/b.lua"': '/b.lua',   # Lua: "" is true
+            'os.getenv("HOME") .. "/c.lua"': '/h/c.lua',
+            'os.getenv("UNSET") .. "/c.lua"': None,
+            'p': None,
+            'base .. "/c.lua"': None,
+        }
+        for expr, value in cases.items():
+            with self.subTest(expr):
+                got = control.path_expr(expr, env)
+                self.assertEqual(got if isinstance(got, str) else None, value)
+
+
 class Transactions(unittest.TestCase):
     """A change is all or nothing: files, saved settings and what Hyprland runs agree."""
 
     def setUp(self):
         self.home = home_with()
         self.p = control.paths(self.home)
-        self.calls = []
+        self.hl = FakeHyprland(self.p)
+        self.calls = self.hl.calls
         with mock.patch.object(control, 'hypr', side_effect=self.hypr):
             control.install(control.fresh(), self.p)
         control.save(control.fresh(), self.p)
         self.calls.clear()
 
     def hypr(self, *args):
-        self.calls.append(args)
-        return LOADED if args[0] == 'animations' else ''
+        self.hl.p = self.p
+        return self.hl(*args)
 
     def main(self, *argv, hypr=None, **patches):
         out = io.StringIO()
@@ -403,10 +546,11 @@ class Transactions(unittest.TestCase):
 
 class Remove(unittest.TestCase):
     def setUp(self):
-        self.original = b'-- user config\nrequire("hypr.input")\n'
+        self.original = USER_CONFIG.encode()
         self.home = home_with(self.original.decode())
         self.p = control.paths(self.home)
-        with mock.patch.object(control, 'hypr', return_value=LOADED):
+        self.hl = FakeHyprland(self.p)
+        with mock.patch.object(control, 'hypr', side_effect=self.hl):
             control.install(control.fresh(), self.p)
         self.p['state'].mkdir(parents=True, exist_ok=True)
         (self.p['state'] / 'override').write_text('snappy\n')
@@ -465,6 +609,36 @@ class KnownErrors(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 control.reload_checked(p=p)
 
+    def test_memory_is_dropped_when_the_config_changes(self):
+        # Remembered, then fixed and reloaded elsewhere, then back in another form: ours to report.
+        home = home_with(files={'input.lua': 'oops(\n'})
+        p = control.paths(home)
+        always = lambda *args: 'input.lua: old typo' if args[0] == 'configerrors' else ''
+        with mock.patch.object(control, 'hypr', side_effect=always):
+            control.reload_checked(p=p)
+        (p['hypr_dir'] / 'input.lua').write_text('-- fixed\noops(\n')
+        with mock.patch.object(control, 'hypr', side_effect=self.fake('input.lua: old typo')):
+            with self.assertRaises(RuntimeError):
+                control.reload_checked(p=p)
+
+    def test_our_line_and_module_do_not_change_the_config(self):
+        home = home_with(files={'input.lua': '-- mine\n'})
+        p = control.paths(home)
+        before = control.config_fingerprint(p)
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
+            control.install(control.fresh(), p)
+        self.assertEqual(control.config_fingerprint(p), before)
+        (p['hypr_dir'] / 'input.lua').write_text('-- mine, edited\n')
+        self.assertNotEqual(control.config_fingerprint(p), before)
+
+    def test_an_older_memory_file_is_ignored(self):
+        p = control.paths(home_with())
+        p['state'].mkdir(parents=True)
+        (p['state'] / 'known-errors').write_text('input.lua: old typo\n')   # before configs were tracked
+        with mock.patch.object(control, 'hypr', side_effect=self.fake('input.lua: old typo')):
+            with self.assertRaises(RuntimeError):
+                control.reload_checked(p=p)
+
     def test_without_memory_a_returning_error_fails(self):
         with mock.patch.object(control, 'hypr', side_effect=self.fake('input.lua: old typo')):
             with self.assertRaises(RuntimeError):
@@ -478,14 +652,16 @@ class LineEndings(unittest.TestCase):
         'no final newline': b'-- user\nrequire("a")',
         'trailing blank lines': b'-- user\nrequire("a")\n\n\n',
         'crlf without final newline': b'-- user\r\nrequire("a")',
+        'cr only': b'-- config\r',
+        'cr lines': b'-- user\rrequire("a")\r',
         'empty': b'',
     }
 
     def test_install_remove_round_trips_bytes(self):
         for name, original in self.CASES.items():
-            with self.subTest(name), mock.patch.object(control, 'hypr', return_value=LOADED):
-                home = home_with(None)
-                p = control.paths(home)
+            home = home_with(None)
+            p = control.paths(home)
+            with self.subTest(name), mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
                 p['hyprland'].write_bytes(original)
                 control.install(control.fresh(), p)
                 installed = p['hyprland'].read_bytes()
@@ -494,6 +670,9 @@ class LineEndings(unittest.TestCase):
                 if b'\r\n' in original:
                     self.assertTrue(installed.endswith(control.MARK.encode() + b'\r\n'))
                     self.assertNotIn(b'\n', installed.replace(b'\r\n', b''))
+                elif b'\r' in original:
+                    self.assertTrue(installed.endswith(control.MARK.encode() + b'\r'))
+                    self.assertNotIn(b'\n', installed)
                 backup, = p['hypr_dir'].glob('hyprland.lua.bak.*-tricky-tiles')
                 self.assertEqual(backup.read_bytes(), original)
                 control.install(control.fresh(), p)   # idempotent
@@ -502,9 +681,9 @@ class LineEndings(unittest.TestCase):
                 self.assertEqual(p['hyprland'].read_bytes(), original)
 
     def test_lines_added_after_ours_stay(self):
-        with mock.patch.object(control, 'hypr', return_value=LOADED):
-            home = home_with('-- user\n')
-            p = control.paths(home)
+        home = home_with('-- user\n')
+        p = control.paths(home)
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
             control.install(control.fresh(), p)
             with p['hyprland'].open('a') as f:
                 f.write('require("later")\n')
@@ -522,46 +701,100 @@ class LineEndings(unittest.TestCase):
 
 
 class ModuleLoaded(unittest.TestCase):
+    """A reload must prove it ran the module just written, and Remove that none of it runs."""
+
+    SYNTAX = '/home/u/.config/hypr/hyprland.lua:3: unexpected symbol near \'}\''
+
+    def installed(self, **over):
+        home = home_with()
+        p = control.paths(home)
+        v = control.fresh()
+        v.update(over)
+        hl = FakeHyprland(p)
+        with mock.patch.object(control, 'hypr', side_effect=hl):
+            control.install(v, p)
+        return p, v, hl
+
     def test_install_fails_when_an_earlier_error_stops_the_module(self):
         original = 'error("x")\n'
         home = home_with(original)
         p = control.paths(home)
-
-        def hypr(*args):   # the error was already there, so configerrors does not change
-            return {'configerrors': 'hyprland.lua:1: x', 'animations': NOT_LOADED}.get(args[0], '')
-        with mock.patch.object(control, 'hypr', side_effect=hypr):
+        # The error was already there, so configerrors does not change.
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p, errors='hyprland.lua:1: x', runs=False)):
             with self.assertRaisesRegex(RuntimeError, 'did not load.*hyprland.lua:1: x'):
                 control.install(control.fresh(), p)
         self.assertEqual(p['hyprland'].read_text(), original)
         self.assertFalse(p['module'].exists())
 
     def test_reload_without_the_module_rolls_back(self):
-        home = home_with()
-        p = control.paths(home)
-        with mock.patch.object(control, 'hypr', return_value=LOADED):
-            control.install(control.fresh(), p)
+        p, v, hl = self.installed()
         before = p['module'].read_text()
-        v = control.fresh()
         v['swipes'] = True
-        with mock.patch.object(control, 'hypr', side_effect=lambda *a: NOT_LOADED if a[0] == 'animations' else ''):
+        hl.runs = False
+        with mock.patch.object(control, 'hypr', side_effect=hl):
             with self.assertRaisesRegex(RuntimeError, 'did not load'):
                 control.apply_module(v, p)
         self.assertEqual(p['module'].read_text(), before)
+
+    def test_old_module_left_running_by_a_refused_reload_fails(self):
+        # hyprland.lua stopped parsing (an error the user already had), so the reload keeps the old
+        # config running, ttSpring leaf and all; only the new curve points tell.
+        p, v, hl = self.installed()
+        before = p['module'].read_text()
+        hl.parses, hl.errors = False, self.SYNTAX
+        v['swipes'] = True
+        with mock.patch.object(control, 'hypr', side_effect=hl):
+            with self.assertRaisesRegex(RuntimeError, 'did not load'):
+                control.apply_module(v, p)
+        self.assertEqual(p['module'].read_text(), before)
+        self.assertIn(('animations', '-j'), hl.calls)   # read back, never changed with eval
+        self.assertFalse([c for c in hl.calls if c[0] == 'eval'])
+
+    def test_remove_fails_while_the_old_module_still_runs(self):
+        p, _, hl = self.installed()
+        installed, module = p['hyprland'].read_bytes(), p['module'].read_bytes()
+        hl.parses = False   # an error that cannot be read as a refused reload: the leaves tell
+        with mock.patch.object(control, 'hypr', side_effect=hl):
+            with self.assertRaisesRegex(RuntimeError, 'kept running Tricky Tiles'):
+                control.uninstall(p)
+        self.assertEqual((p['hyprland'].read_bytes(), p['module'].read_bytes()), (installed, module))
+
+    def test_remove_with_motion_off_fails_on_a_refused_reload(self):
+        p, _, hl = self.installed(enabled=False)
+        installed = p['hyprland'].read_bytes()
+        hl.parses, hl.errors = False, self.SYNTAX
+        with mock.patch.object(control, 'hypr', side_effect=hl):
+            with self.assertRaisesRegex(RuntimeError, 'did not reload.*unexpected symbol'):
+                control.uninstall(p)
+        self.assertEqual(p['hyprland'].read_bytes(), installed)
+        self.assertTrue(p['module'].exists())
+
+    def test_remove_succeeds_once_the_module_is_gone(self):
+        p, _, hl = self.installed()
+        with mock.patch.object(control, 'hypr', side_effect=hl):
+            control.uninstall(p)
+        self.assertFalse(control.installed(p))
+        self.assertEqual(hl.leaves, [])
 
     def test_unreadable_answer_does_not_block(self):
         home = home_with()
         p = control.paths(home)
         with mock.patch.object(control, 'hypr', return_value='not json'):
             control.install(control.fresh(), p)
-        self.assertTrue(control.installed(p))
+            control.uninstall(p)
+        self.assertFalse(control.installed(p))
 
-    def test_motion_off_is_not_checked(self):
-        # With motion off the module defines no curve, so there is nothing to read back.
+    def test_motion_off_is_checked_too(self):
+        # The proof curve does not depend on motion, so a module stopped early is caught either way.
         home = home_with()
         p = control.paths(home)
         v = control.fresh()
         v['enabled'] = False
-        with mock.patch.object(control, 'hypr', side_effect=lambda *a: NOT_LOADED if a[0] == 'animations' else ''):
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p, runs=False)):
+            with self.assertRaisesRegex(RuntimeError, 'did not load'):
+                control.install(v, p)
+        self.assertFalse(control.installed(p))
+        with mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)):
             control.install(v, p)
         self.assertTrue(control.installed(p))
 
@@ -628,8 +861,9 @@ class LuaStrings(unittest.TestCase):
             (home / sub).mkdir(parents=True)
         (home / '.config/hypr/hyprland.lua').write_text('-- user\n')
         p = control.paths(home)
-        calls = []
-        with mock.patch.object(control, 'hypr', side_effect=lambda *a: calls.append(a) or LOADED):
+        hl = FakeHyprland(p)
+        calls = hl.calls
+        with mock.patch.object(control, 'hypr', side_effect=hl):
             control.install(control.fresh(), p)
             v = control.fresh()
             v['duration'] = 250
@@ -655,7 +889,7 @@ class SettingsRules(unittest.TestCase):
         p = control.paths(home)
         out = io.StringIO()
         with mock.patch.object(control, 'paths', return_value=p), \
-                mock.patch.object(control, 'hypr', side_effect=lambda *a: LOADED if a[0] == 'animations' else ''), \
+                mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)), \
                 contextlib.redirect_stdout(out):
             control.main(['set', 'workspace_axis', 'vertical'])
         self.assertEqual(json.loads(out.getvalue())['values']['workspace_axis'], 'vertical')
@@ -687,7 +921,9 @@ class SwipeOverlap(unittest.TestCase):
     def test_directions_that_overlap(self):
         found, _ = self.found('hl.gesture({ fingers = 3, direction = "left", action = "close" })')
         self.assertEqual(found[0]['directions'], ['left'])
-        self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows'), ['horizontal'])
+        self.assertEqual((found[0]['direction'], found[0]['after']), ('left', False))
+        # Hyprland takes our later "horizontal" next to their "left": left swipes stay theirs.
+        self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows'), [])
         self.assertEqual(self.skipped(found, tracking='step', swipe_horizontal='windows'), ['left'])
         self.assertEqual(self.skipped(found, tracking='step', swipe_horizontal='off', swipe_vertical='workspaces'), [])
         found, _ = self.found('hl.gesture({ fingers = 3, direction = "swipe", action = "move" })')
@@ -696,6 +932,29 @@ class SwipeOverlap(unittest.TestCase):
         found, _ = self.found('hl.gesture({ fingers = 3, direction = "Vert", action = "workspace" })')
         self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows', swipe_vertical='workspaces'),
                          ['vertical'])
+
+    def test_an_earlier_axis_takes_both_sides(self):
+        found, _ = self.found('hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })')
+        self.assertEqual(self.skipped(found, tracking='step', swipe_horizontal='windows', swipe_vertical='workspaces'),
+                         ['left', 'right'])
+        self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows', swipe_vertical='workspaces'),
+                         ['horizontal'])
+        found, _ = self.found('hl.gesture({ fingers = 3, direction = "r", action = "close" })')
+        self.assertEqual(self.skipped(found, tracking='step', swipe_horizontal='windows'), ['right'])
+        self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows'), [])
+
+    def test_swipes_after_our_line_are_the_ones_refused(self):
+        # A swipe loading after ours is refused when ours has its direction or is its axis, so
+        # ours steps aside for it; a later "horizontal" never minds an earlier "left".
+        lines = ['hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })',
+                 'hl.gesture({ fingers = 3, direction = "up", action = "close" })']
+        home = home_with(USER_CONFIG + control.LOADER + '\n' + '\n'.join(lines) + '\n')
+        found = control.conflicts(control.fresh(), control.paths(home))
+        self.assertEqual([(f['direction'], f['after']) for f in found], [('horizontal', True), ('up', True)])
+        self.assertEqual(self.skipped(found, tracking='step', swipe_horizontal='windows', swipe_vertical='workspaces'),
+                         ['up'])
+        self.assertEqual(self.skipped(found, tracking='follow', swipe_horizontal='windows', swipe_vertical='workspaces'),
+                         ['horizontal', 'vertical'])
 
     def test_what_never_overlaps(self):
         found, _ = self.found(
@@ -722,10 +981,9 @@ class SwipeOverlap(unittest.TestCase):
     def test_enabling_swipes_skips_taken_directions(self):
         home = home_with(files={'input.lua': 'hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })\n'})
         p = control.paths(home)
-        calls = []
         out = io.StringIO()
         with mock.patch.object(control, 'paths', return_value=p), \
-                mock.patch.object(control, 'hypr', side_effect=lambda *a: calls.append(a) or (LOADED if a[0] == 'animations' else '')), \
+                mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)), \
                 contextlib.redirect_stdout(out):
             control.main(['install'])
             control.main(['set', 'swipes', 'true'])

@@ -38,3 +38,10 @@ monitors; "Up and down" no longer snaps back while swipes are off; paths with qu
 break live changes; the panel scrolls on short screens; Compare, Try it and the windows toggle
 are reachable by keyboard; controls no longer snap back while changes queue; Remove asks twice;
 demo media are WebP (5 MB instead of 13 MB).
+
+Second review pass: a reload now has to prove this module ran (fresh points on a `ttLoaded`
+curve), and Remove has to prove it stopped, so a config that fails to parse can no longer fake
+success; remembered config errors are tied to the exact config they came from; only files your
+config actually loads count as conflicts, using Hyprland's directional overlap rule; bare-CR
+line endings round-trip; power saver never retries a failed change in a loop; the panel
+watches the settings file under `XDG_CONFIG_HOME`.

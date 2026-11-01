@@ -153,7 +153,9 @@ Panel {
       installed = result.installed !== false
       loaded = true
       message = result.ok ? "" : result.error
-      syncPower()
+      // Never resync from a failed reply: a failing override would retry forever. The next
+      // good reply or power-profile change tries again.
+      if (result.ok) syncPower()
     } catch (e) { message = "Could not read Tricky Tiles settings." }
   }
   // Commands run in order; a newer change to the same key replaces a queued one.
@@ -363,7 +365,8 @@ Panel {
   }
   // Pick up changes made outside the panel (the CLI, another session).
   FileView {
-    path: Quickshell.env("HOME") + "/.config/omarchy/tricky-tiles.json"
+    // The helper's rule: an absolute $XDG_CONFIG_HOME, else ~/.config.
+    path: ((Quickshell.env("XDG_CONFIG_HOME") || "").startsWith("/") ? Quickshell.env("XDG_CONFIG_HOME") : Quickshell.env("HOME") + "/.config") + "/omarchy/tricky-tiles.json"
     watchChanges: true
     printErrors: false
     onFileChanged: if (!root.busy && root.pending.length === 0) root.refresh_()

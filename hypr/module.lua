@@ -2,7 +2,8 @@
 -- current settings) and writes the result to tricky-tiles.lua next to the user's
 -- hyprland.lua, which loads it through one marked line. Hyprland re-runs it on every
 -- reload (a fresh Lua state), and the panel re-runs it with `hyprctl eval` to
--- apply motion changes live; gestures are only registered on a fresh load.
+-- apply motion changes live; gestures are only registered on a fresh load. S.loaded is a
+-- fresh set of curve points per render (see the end of this file).
 
 TrickyTiles = TrickyTiles or {}
 local TT = TrickyTiles
@@ -124,9 +125,9 @@ end
 -- strip, workspace for workspaces): content moves with the fingers and the
 -- spring above finishes the move from where they lift. "One per swipe" moves
 -- exactly one window or workspace when the fingers lift. Hyprland refuses a swipe
--- that an earlier one with the same fingers already covers (a config error), and
--- the user's config loads first, so the helper lists the directions they already
--- use in g.skip and those are left to them (the panel lists the lines).
+-- that an earlier one with the same fingers already covers (a config error), so the
+-- helper lists in g.skip the directions that would clash with the user's own swipes
+-- and those are left to them (the panel lists the lines).
 function TT.register(g)
   if not g.enabled then return end
   local f = g.fingers
@@ -189,4 +190,10 @@ TT.apply(S)
 if not TT.registered then
   TT.registered = true
   TT.register(S.gestures)
+end
+
+-- Proof for the helper that this render ran to the end in Hyprland's current config, motion
+-- on or off: curves outlive a reload, so each render gives this unused one new points.
+if S.loaded then
+  hl.curve("ttLoaded", { type = "bezier", points = { { S.loaded[1], S.loaded[2] }, { S.loaded[3], S.loaded[4] } } })
 end

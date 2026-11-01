@@ -17,3 +17,7 @@
   Test chords use Super+Ctrl+Shift; never script Ctrl+Alt+F-keys (they switch the VT).
 - Keep motion rules from the userinterface.wiki skills: springs for gestures and interruptible
   moves, easing for state changes, user-initiated motion arriving well under 300 ms.
+- Sandboxing the helper: a temp `HOME` is not enough. The helper honours an absolute
+  `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, which Omarchy sessions set to the real folders, so
+  always run it as `env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME=$tmp ...` (or point both at
+  the temp tree). A review run that skipped this once edited the live config.
