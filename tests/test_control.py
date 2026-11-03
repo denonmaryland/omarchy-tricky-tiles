@@ -282,7 +282,7 @@ class Module(unittest.TestCase):
             self.assertTrue(any(f'leaf={leaf}' in c for c in calls), leaf)
 
     def test_off_registers_nothing(self):
-        calls = self.run_lua(self.render(enabled=False))
+        calls = self.run_lua(self.render(enabled=False, swipes=True, scope='everything'))
         self.assertFalse(any(c.startswith(('animation', 'gesture')) for c in calls))
         self.assertEqual([c.split(' ')[1] for c in calls if c.startswith('curve')], ['ttLoaded'])   # the proof only
 
@@ -825,12 +825,12 @@ class ModuleLoaded(unittest.TestCase):
         self.assertEqual(p['hyprland'].read_bytes(), installed)
         self.assertTrue(p['module'].exists())
 
-    def test_remove_with_motion_off_and_swipes_on_fails_on_a_refused_reload(self):
+    def test_remove_with_master_off_and_swipes_saved_fails_on_a_refused_reload(self):
         # Codex: Remove succeeded although Hyprland refused the reload, when motion was off (no
         # animation left to look at) and the syntax error's path had a space in it.
         p, _, hl = self.installed(enabled=False, swipes=True)
         installed, module = p['hyprland'].read_bytes(), p['module'].read_bytes()
-        self.assertEqual([g['direction'] for g in hl.gestures], ['horizontal'])
+        self.assertEqual(hl.gestures, [])
         hl.parses, hl.errors = False, "/home/my user/.config/hypr/hyprland.lua:3: unexpected symbol near '}'"
         hl('reload', 'config-only')   # Hyprland reloaded when the broken file was saved: the error is listed
         with mock.patch.object(control, 'hypr', side_effect=hl):
@@ -838,7 +838,7 @@ class ModuleLoaded(unittest.TestCase):
                 control.uninstall(p)
         self.assertEqual((p['hyprland'].read_bytes(), p['module'].read_bytes()), (installed, module))
         self.assertTrue(control.installed(p))
-        self.assertEqual([g['direction'] for g in hl.gestures], ['horizontal'])   # still running, still offered
+        self.assertEqual(hl.gestures, [])
 
     def test_remove_proves_nothing_of_ours_runs_before_taking_the_line_out(self):
         p, _, hl = self.installed(swipes=True, scope='everything')
@@ -1145,6 +1145,60 @@ class Refusals(unittest.TestCase):
     def ours(self):
         return [g['direction'] for g in self.hl.gestures if str(self.p['module']) in g['where']]
 
+    def test_master_off_restores_config_and_on_restores_saved_settings(self):
+        self.main('set', 'scope', 'everything')
+        self.main('set', 'swipes', 'true')
+        saved = control.read(self.p)
+        loader = self.p['hyprland'].read_bytes()
+        self.assertTrue(self.hl.leaves)
+        self.assertEqual(self.ours(), ['horizontal'])
+        # A user's later swipe was blocked by ours; disabling must give it back.
+        self.hl.after = [(3, 'left', self.input + ':9')]
+        self.hl.calls.clear()
+        r = self.main('set', 'enabled', 'false')
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(self.reloads(), 1)
+        self.assertEqual(self.hl.leaves, [])
+        self.assertEqual(self.ours(), [])
+        self.assertEqual([g['direction'] for g in self.hl.gestures], ['left'])
+        self.assertEqual(r['skipped'], [])
+        self.assertEqual(control.read(self.p), dict(saved, enabled=False))
+        self.assertEqual(self.p['hyprland'].read_bytes(), loader)
+        self.assertTrue(control.installed(self.p))
+        self.hl.after = []
+        r = self.main('set', 'enabled', 'true')
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(control.read(self.p), saved)
+        self.assertTrue(self.hl.leaves)
+        self.assertEqual(self.ours(), ['horizontal'])
+
+    def test_editing_while_off_never_reenables_motion_or_swipes(self):
+        self.main('set', 'swipes', 'true')
+        self.main('set', 'enabled', 'false')
+        for command in [('set', 'duration', '250'), ('set', 'bounce', '20'),
+                        ('preset', 'lively'), ('import', 'TT1-300-10-50-1'),
+                        ('set', 'sensitivity', '120'), ('apply',)]:
+            with self.subTest(command=command):
+                r = self.main(*command)
+                self.assertTrue(r['ok'], r.get('error'))
+                self.assertFalse(r['values']['enabled'])
+                self.assertTrue(r['values']['swipes'])
+                self.assertEqual(self.hl.leaves, [])
+                self.assertEqual(self.ours(), [])
+        self.assertEqual(control.read(self.p)['duration'], 300)
+
+    def test_failed_master_off_keeps_saved_settings_and_running_module(self):
+        self.main('set', 'swipes', 'true')
+        saved = control.read(self.p)
+        module = self.p['module'].read_bytes()
+        self.hl.parses = False
+        r = self.main('set', 'enabled', 'false')
+        self.assertFalse(r['ok'])
+        self.assertEqual(control.read(self.p), saved)
+        self.assertEqual(self.p['module'].read_bytes(), module)
+        self.assertTrue(self.hl.leaves)
+        self.assertEqual(self.ours(), ['horizontal'])
+
     def test_the_stub_and_the_fake_never_raise_on_a_refusal(self):
         self.hl.before = [(3, 'horizontal', self.input + ':1')]
         with mock.patch.object(control, 'hypr', side_effect=self.hl):
@@ -1271,9 +1325,11 @@ class Refusals(unittest.TestCase):
         self.main('set', 'swipes', 'true')
         self.hl.before = []   # the user comments their swipe out
         self.hl.calls.clear()
-        r = self.main('set', 'enabled', 'false')   # a reload, swipes unchanged: no refusal to flash
-        self.assertEqual((r['skipped'], self.reloads(), self.ours()), (['horizontal'], 1, []))
+        r = self.main('set', 'enabled', 'false')   # master off clears the old refusal
+        self.assertEqual((r['skipped'], self.reloads(), self.ours()), ([], 1, []))
         r = self.main('set', 'sensitivity', '120')
+        self.assertEqual((r['skipped'], self.ours()), ([], []))
+        r = self.main('set', 'enabled', 'true')
         self.assertEqual((r['skipped'], self.ours()), ([], ['horizontal']))
         self.hl.before = [(3, 'horizontal', self.input + ':1')]
         self.assertEqual(self.main('apply')['skipped'], ['horizontal'])

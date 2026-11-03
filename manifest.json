@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.denonmaryland.tricky-tiles",
   "name": "Tricky Tiles",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "denonmaryland",
   "description": "Spring physics for switching windows and workspaces, with presets, a live preview and swipes that follow your fingers",
   "kinds": [

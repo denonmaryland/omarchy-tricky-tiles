@@ -270,7 +270,7 @@ def module_settings(values, skip=(), marker=None):
         exit_speed=round(max(1.0, dur * 0.5), 2), focus_fade=values['focus_fade'],
         ws_style=workspace_style(values['travel'], values['workspace_axis']),
         special_style='fade' if values['travel'] <= 0 else 'slidevert',
-        gestures=dict(enabled=values['swipes'], fingers=int(values['fingers']),
+        gestures=dict(enabled=values['enabled'] and values['swipes'], fingers=int(values['fingers']),
                       horizontal=values['swipe_horizontal'], vertical=values['swipe_vertical'],
                       tracking=values['tracking'], wrap=values['wrap'],
                       scale=round(1.4 * sens, 3), ws_distance=int(round(700 / sens)),
@@ -532,7 +532,7 @@ def last_skipped(values, p, lines):
 
 def wanted(values):
     """The swipe directions the module registers, as Hyprland names them."""
-    if not values['swipes']:
+    if not values['enabled'] or not values['swipes']:
         return []
     follow = values['tracking'] == 'follow'
     out = []
@@ -1062,20 +1062,18 @@ def main(argv=None):
             saved = snapshot(*files, *([p['hyprland']] if args.action == 'install' else []))
             if args.action == 'set':
                 values[args.key] = clamp(args.key, args.value)
-                if args.key in MOTION_KEYS:
-                    values['enabled'] = True
                 normalize(values)
                 applied = apply_module(values, p)
                 save(values, p)
             elif args.action == 'preset':
                 if args.key not in PRESETS:
                     raise ValueError(f'unknown preset {args.key}; choose {", ".join(PRESETS)}')
-                values.update({k: PRESETS[args.key][k] for k in MOTION_KEYS}, enabled=True)
+                values.update({k: PRESETS[args.key][k] for k in MOTION_KEYS})
                 normalize(values)
                 applied = apply_module(values, p)
                 save(values, p)
             elif args.action == 'import':
-                values.update(decode(args.key), enabled=True)
+                values.update(decode(args.key))
                 normalize(values)
                 applied = apply_module(values, p)
                 save(values, p)

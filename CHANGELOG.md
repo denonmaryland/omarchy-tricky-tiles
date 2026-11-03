@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 (2026-11-02)
+
+- Make the main switch suspend both motion and trackpad swipes, restoring the user's configured behavior while keeping settings for re-enabling.
+- Keep Tricky Tiles off when adjusting settings, choosing presets or importing share codes.
+
 ## 1.0.0 (unreleased, 2026-10-28)
 
 First public version.

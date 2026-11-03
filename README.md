@@ -53,6 +53,7 @@ Moves start from rest, keep their momentum when you interrupt them, and settle, 
 
 ## Everything in the panel
 
+- **Master switch**: turn Tricky Tiles off to restore your config's own motion and swipes without uninstalling. Your settings are remembered; editing them while off keeps the plugin off until you turn it back on.
 - **Presets, drawn as their curves**: Spring (default), Glide (no overshoot), Snappy, Lively (a visible bounce that settles) and Reduced (least motion).
 - **Sliders**: duration, bounce, and workspace slide (full slide, a short lift with a fade, or a plain crossfade). A focus fade eases the arriving window up to its focused opacity.
 - **A live preview** with stills of your own windows. Hold *Compare* to see stock Omarchy, or press *Try it on my desktop* for one real window step and workspace hop.

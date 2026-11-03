@@ -46,6 +46,25 @@ const S = vm.createContext({ Math });
 vm.runInContext(spring, S);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
+test('editing motion and choosing a preset preserve the master off switch', () => {
+  const ctx = vm.createContext({
+    loaded: true, draft: {}, values: { enabled: false, swipes: true, duration: 290 },
+    presets: { lively: { duration: 360, bounce: 25, travel: 45, focus_fade: true } },
+    matching: () => 'custom', send: () => {}, playPreview: () => {},
+  });
+  for (const name of ['commit', 'pickPreset']) {
+    const body = qml.match(new RegExp(`function ${name}\\(([^)]*)\\) \\{([\\s\\S]*?)\\n  \\}`));
+    vm.runInContext(`function ${name}(${body[1]}) {${body[2]}\n}`, ctx);
+  }
+  vm.runInContext('commit("duration", 250)', ctx);
+  assert.equal(ctx.values.duration, 250);
+  assert.equal(ctx.values.enabled, false);
+  vm.runInContext('pickPreset("lively")', ctx);
+  assert.equal(ctx.values.duration, 360);
+  assert.equal(ctx.values.enabled, false);
+  assert.equal(ctx.values.swipes, true);
+});
+
 test('queued changes stay on screen when an older reply lands', () => {
   const saved = { duration: 290, bounce: 15, preset: 'spring', enabled: true, swipes: false };
   // Duration 400 is in flight; then bounce 30 and swipes on are queued.

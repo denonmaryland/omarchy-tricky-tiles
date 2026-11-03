@@ -186,7 +186,7 @@ Panel {
     const v = Object.assign({}, values)
     const patch = {}
     patch[key] = value
-    if (key === "duration" || key === "bounce" || key === "travel" || key === "focus_fade") { v[key] = value; patch.enabled = true; patch.preset = matching(v) }
+    if (key === "duration" || key === "bounce" || key === "travel" || key === "focus_fade") { v[key] = value; patch.preset = matching(v) }
     values = Object.assign(v, patch)
     send(["set", key, String(value)], patch)
     if (key !== "power_saver" && key !== "preview_windows") playPreview()
@@ -196,7 +196,7 @@ Panel {
     const p = presets[id]
     if (!p) return
     draft = {}
-    const patch = {enabled: true, preset: id, duration: p.duration, bounce: p.bounce, travel: p.travel, focus_fade: p.focus_fade}
+    const patch = {preset: id, duration: p.duration, bounce: p.bounce, travel: p.travel, focus_fade: p.focus_fade}
     values = Object.assign({}, values, patch)
     send(["preset", id], patch)
     playPreview()
@@ -471,7 +471,7 @@ Panel {
             Text {
               width: parent.width
               elide: Text.ElideRight
-              text: !root.values.enabled ? "Off · your config's own motion"
+              text: !root.values.enabled ? "Off · your config's own motion and swipes"
                 : root.overrideName ? "Power saver · using " + (root.presets[root.overrideName] ? root.presets[root.overrideName].label : root.overrideName)
                 : root.presets[root.values.preset] ? root.presets[root.values.preset].caption : "Custom · your own spring"
               color: root.alphaOf(root.fg, 0.55); font.family: root.family; font.pixelSize: Style.font.caption + 1
@@ -776,7 +776,8 @@ Panel {
           visible: root.tab === 1
           width: parent.width
           title: "Trackpad swipes"
-          caption: root.values.swipes ? (root.values.tracking === "follow" ? "Content follows your fingers, then springs into place" : "One window or workspace per swipe")
+          caption: !root.values.enabled ? "Paused while Tricky Tiles is off · settings are remembered"
+                   : root.values.swipes ? (root.values.tracking === "follow" ? "Content follows your fingers, then springs into place" : "One window or workspace per swipe")
                                       : "Let Tricky Tiles handle " + root.values.fingers + "-finger swipes"
           checked: root.values.swipes
           enabled: root.installed
