@@ -57,7 +57,7 @@ Moves start from rest, keep their momentum when you interrupt them, and settle, 
 - **Presets, drawn as their curves**: Spring (default), Glide (no overshoot), Snappy, Lively (a visible bounce that settles) and Reduced (least motion).
 - **Sliders**: duration, bounce, and workspace slide (full slide, a short lift with a fade, or a plain crossfade). A focus fade eases the arriving window up to its focused opacity.
 - **A live preview** with stills of your own windows. Hold *Compare* to see stock Omarchy, or press *Try it on my desktop* for one real window step and workspace hop.
-- **Trackpad swipes**: *Follow fingers* or *One per swipe* (with optional wrap-around on the window strip). Three or four fingers, adjustable finger travel.
+- **Trackpad swipes**: pick a setup (*Windows and workspaces*, *Workspaces side to side* or *Workspaces up and down*); the one that fits your layout is marked, and *Customise each direction* sets left/right and up/down separately. Then a feel: *Follow fingers* or *One per swipe* (with optional wrap-around on the window strip). Three or four fingers, adjustable finger travel.
 - **Everything mode** (optional): opening, closing, menus and fades share the same duration.
 - **Power saver**: switch to Snappy or Reduced while the power-saver profile is on.
 - **Share codes** such as `TT1-290-15-30-1` to copy a motion to another machine.
