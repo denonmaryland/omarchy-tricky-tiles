@@ -67,6 +67,8 @@ CHOICES = dict(scope=('switching', 'everything'), workspace_axis=('vertical', 'h
                tracking=('follow', 'step'), power_saver=('off', 'snappy', 'reduced'), fingers=('3', '4'))
 BOOLS = ('enabled', 'focus_fade', 'swipes', 'wrap', 'preview_windows')
 MOTION_KEYS = ('duration', 'bounce', 'travel', 'focus_fade')
+# The panel's swipe setups: both directions in one change, so one reload.
+SETUPS = dict(both=('windows', 'workspaces'), side=('workspaces', 'off'), vertical=('off', 'workspaces'))
 GESTURE_KEYS = ('swipes', 'swipe_horizontal', 'swipe_vertical', 'tracking', 'wrap', 'sensitivity', 'fingers')
 
 PRESETS = {
@@ -1040,7 +1042,7 @@ def report(ok, values, p, error=None, applied=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('action', choices=['state', 'set', 'preset', 'apply', 'install', 'uninstall',
+    parser.add_argument('action', choices=['state', 'set', 'preset', 'setup', 'apply', 'install', 'uninstall',
                                            'import', 'override', 'demo'])
     parser.add_argument('key', nargs='?')
     parser.add_argument('value', nargs='?')
@@ -1069,6 +1071,13 @@ def main(argv=None):
                 if args.key not in PRESETS:
                     raise ValueError(f'unknown preset {args.key}; choose {", ".join(PRESETS)}')
                 values.update({k: PRESETS[args.key][k] for k in MOTION_KEYS})
+                normalize(values)
+                applied = apply_module(values, p)
+                save(values, p)
+            elif args.action == 'setup':
+                if args.key not in SETUPS:
+                    raise ValueError(f'unknown setup {args.key}; choose {", ".join(SETUPS)}')
+                values['swipe_horizontal'], values['swipe_vertical'] = SETUPS[args.key]
                 normalize(values)
                 applied = apply_module(values, p)
                 save(values, p)

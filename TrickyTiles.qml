@@ -98,8 +98,12 @@ Panel {
       if (!installed) return r
       r.push("swipes")
       if (values.swipes) {
-        r.push("tracking", "swipe_horizontal")
-        if (values.swipe_horizontal !== "workspaces") r.push("swipe_vertical")
+        r.push("setup", "customise")
+        if (customShown) {
+          r.push("swipe_horizontal")
+          if (values.swipe_horizontal !== "workspaces") r.push("swipe_vertical")
+        }
+        r.push("tracking")
         if (values.tracking === "follow") r.push("sensitivity")
         if (values.tracking === "step" && values.swipe_horizontal === "windows") r.push("wrap")
       }
@@ -127,7 +131,46 @@ Panel {
   readonly property var swipeInfo: Spring.swipeConflicts(conflicts, conflictsByFingers, values.fingers)
   readonly property bool hasConflicts: swipeInfo.list.length > 0 || (values.swipes && skipped.length > 0)
 
+  // Swipe setups: the three combinations most people want, picked in one click. Anything
+  // else is "custom" and shows the per-direction controls. Pairs match SETUPS in control.py.
+  readonly property var setups: [
+    {id: "both", horizontal: "windows", vertical: "workspaces", title: "Windows and workspaces", detail: "← → windows · ↑ ↓ workspaces"},
+    {id: "side", horizontal: "workspaces", vertical: "off", title: "Workspaces side to side", detail: "← → workspaces · ↑ ↓ left to you"},
+    {id: "vertical", horizontal: "off", vertical: "workspaces", title: "Workspaces up and down", detail: "↑ ↓ workspaces · ← → left to you"}
+  ]
+  readonly property string currentSetup: {
+    for (var i = 0; i < setups.length; i++)
+      if (setups[i].horizontal === values.swipe_horizontal && (setups[i].vertical === values.swipe_vertical
+          || values.swipe_horizontal === "workspaces")) return setups[i].id   // the helper turns ↑ ↓ off there
+    return ""
+  }
+  // What the helper would pick for a fresh install on this layout.
+  readonly property string suggestedSetup: layoutName === "scrolling" ? "both" : layoutName ? "side" : ""
+  property bool customOpen: false
+  readonly property bool customShown: customOpen || currentSetup === ""
   function alphaOf(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
+
+  // "3 fingers · ← → windows · ↑ ↓ workspaces": the whole swipe setup in one line.
+  function swipeSummary() {
+    const v = values, parts = []
+    if (v.swipe_horizontal !== "off") parts.push("← → " + v.swipe_horizontal)
+    if (v.swipe_horizontal !== "workspaces" && v.swipe_vertical !== "off") parts.push("↑ ↓ " + v.swipe_vertical)
+    return parts.length ? v.fingers + " fingers · " + parts.join(" · ") : "On, but no direction is picked below"
+  }
+  function horizontalHint() {
+    const v = values
+    if (v.swipe_horizontal === "off") return "Tricky Tiles leaves left and right swipes alone."
+    if (v.swipe_horizontal === "workspaces") return "Go to the next or previous workspace. Up and down stay free."
+    if (v.tracking === "step") return "Focus the window to the left or right."
+    return layoutName === "scrolling" ? "Slide the row of windows under your fingers."
+      : "Slide the row of windows under your fingers. This needs a scrolling workspace (Super+L toggles a workspace's layout)."
+  }
+  function verticalHint() {
+    const v = values
+    if (v.swipe_horizontal === "workspaces") return "Off, because left and right already switch workspaces."
+    if (v.swipe_vertical === "off") return "Tricky Tiles leaves up and down swipes alone."
+    return "Go to the next or previous workspace."
+  }
   function fmt(key, v) {
     if (key === "duration") return Math.round(v) + " ms"
     if (key === "travel") return v <= 0 ? "Fade" : v >= 100 ? "Full" : Math.round(v) + "%"
@@ -190,6 +233,19 @@ Panel {
     values = Object.assign(v, patch)
     send(["set", key, String(value)], patch)
     if (key !== "power_saver" && key !== "preview_windows") playPreview()
+  }
+  function pickSetup(id) {
+    if (!loaded) return
+    const setup = setups.filter(function(x) { return x.id === id })[0]
+    if (!setup) return
+    customOpen = false
+    const patch = {swipe_horizontal: setup.horizontal, swipe_vertical: setup.vertical}
+    values = Object.assign({}, values, patch)
+    send(["setup", id], patch)
+  }
+  function setupIndex() {
+    const id = currentSetup || suggestedSetup || "both"
+    return Math.max(0, setups.map(function(x) { return x.id }).indexOf(id))
   }
   function pickPreset(id) {
     if (!loaded) return
@@ -287,6 +343,8 @@ Panel {
     if (!loaded) return
     const c = sliderSpec(cursor)
     if (cursor === "preview_windows") commit("preview_windows", !values.preview_windows)
+    else if (cursor === "setup") pickSetup(setups[Math.max(0, Math.min(setups.length - 1, (currentSetup ? setupIndex() + dx : setupIndex())))].id)
+    else if (cursor === "customise") customOpen = dx > 0
     else if (cursor === "presets") pickPreset(presetOrder[Math.max(0, Math.min(presetOrder.length - 1, presetIndex() + dx))])
     else if (c) commit(c.key, Math.max(c.min, Math.min(c.max, Number(values[c.key]) + dx * c.step)))
     else if (switches.indexOf(cursor) >= 0) { if (values[cursor] !== (dx > 0)) commit(cursor, dx > 0) }
@@ -303,6 +361,8 @@ Panel {
     else if (cursor === "try") send(["demo"])
     else if (cursor === "preview_windows") commit("preview_windows", !values.preview_windows)
     else if (cursor === "use_fingers") useOtherFingers()
+    else if (cursor === "setup") pickSetup(setups[currentSetup ? (setupIndex() + 1) % setups.length : setupIndex()].id)
+    else if (cursor === "customise") customOpen = !customOpen
     else if (cursor === "presets" && !(values.enabled && values.preset === presetOrder[presetIndex()])) pickPreset(presetOrder[presetIndex()])
     else if (tab === 0) playPreview()
   }
@@ -777,7 +837,7 @@ Panel {
           width: parent.width
           title: "Trackpad swipes"
           caption: !root.values.enabled ? "Paused while Tricky Tiles is off · settings are remembered"
-                   : root.values.swipes ? (root.values.tracking === "follow" ? "Content follows your fingers, then springs into place" : "One window or workspace per swipe")
+                   : root.values.swipes ? root.swipeSummary()
                                       : "Let Tricky Tiles handle " + root.values.fingers + "-finger swipes"
           checked: root.values.swipes
           enabled: root.installed
@@ -787,34 +847,129 @@ Panel {
         Column {
           visible: root.tab === 1 && root.values.swipes
           width: parent.width
-          spacing: Style.space(12)
-          Label { text: "Tracking" }
-          Segmented {
-            objectName: "row:tracking"
+          spacing: Style.space(14)
+          // Setups first: each card says what both directions do, with a small trackpad glyph.
+          Column {
+            objectName: "row:setup"
             width: parent.width
-            model: root.choices.tracking
-            current: root.values.tracking
-            focusRing: root.cursor === "tracking"
-            onPicked: function(id) { root.commit("tracking", id) }
+            spacing: Style.space(8)
+            Repeater {
+              model: root.setups
+              SetupCard {
+                required property var modelData
+                required property int index
+                width: parent.width
+                spec: modelData
+                selected: root.currentSetup === modelData.id
+                suggested: root.suggestedSetup === modelData.id
+                keyFocus: root.cursor === "setup" && root.setupIndex() === index
+                onPicked: root.pickSetup(modelData.id)
+              }
+            }
           }
-          Label { text: "Swipe left and right to move between" }
-          Segmented {
-            objectName: "row:swipe_horizontal"
+          // Anything else: per-direction controls, open by themselves for a custom setup.
+          Rectangle {
+            objectName: "row:customise"
             width: parent.width
-            model: root.choices.swipe_horizontal
-            current: root.values.swipe_horizontal
-            focusRing: root.cursor === "swipe_horizontal"
-            onPicked: function(id) { root.commit("swipe_horizontal", id) }
+            height: customCol.implicitHeight + (root.customShown ? Style.space(24) : Style.space(12))
+            radius: Style.space(10)
+            color: root.currentSetup === "" ? root.alphaOf(root.accent, 0.12) : "transparent"
+            border.width: root.currentSetup === "" ? 2 : 0
+            border.color: root.accent
+            Rectangle {
+              anchors.fill: parent; anchors.margins: -Style.space(3)
+              radius: parent.radius + Style.space(3)
+              color: "transparent"
+              border.width: 2; border.color: root.alphaOf(root.fg, 0.7)
+              visible: root.cursor === "customise"
+            }
+            Column {
+              id: customCol
+              x: Style.space(12); y: root.customShown ? Style.space(12) : Style.space(6)
+              width: parent.width - Style.space(24)
+              spacing: Style.space(12)
+              Item {
+                width: parent.width; height: customTitle.implicitHeight
+                Text {
+                  id: customTitle
+                  text: "Customise each direction"
+                  color: root.customShown ? root.fg : root.alphaOf(root.fg, 0.65)
+                  font.family: root.family; font.pixelSize: Style.font.caption + 1
+                  font.weight: root.currentSetup === "" ? Font.DemiBold : Font.Normal
+                }
+                Text {
+                  anchors.right: parent.right
+                  visible: root.currentSetup !== ""
+                  text: root.customOpen ? "⌄" : "›"
+                  color: root.alphaOf(root.fg, 0.65); font.family: root.family; font.pixelSize: Style.font.caption + 1
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: root.currentSetup !== ""
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: { root.customOpen = !root.customOpen; root.cursor = "customise" }
+                }
+              }
+              Column {
+                visible: root.customShown
+                width: parent.width
+                spacing: Style.space(6)
+                Label { text: "←  →   SWIPE LEFT OR RIGHT" }
+                Segmented {
+                  objectName: "row:swipe_horizontal"
+                  width: parent.width
+                  model: root.choices.swipe_horizontal
+                  current: root.values.swipe_horizontal
+                  focusRing: root.cursor === "swipe_horizontal"
+                  onPicked: function(id) { root.commit("swipe_horizontal", id) }
+                }
+                Hint { text: root.horizontalHint() }
+              }
+              Column {
+                visible: root.customShown
+                width: parent.width
+                spacing: Style.space(6)
+                Label { text: "↑  ↓   SWIPE UP OR DOWN" }
+                Segmented {
+                  objectName: "row:swipe_vertical"
+                  enabled: root.values.swipe_horizontal !== "workspaces"
+                  width: parent.width
+                  model: root.choices.swipe_vertical
+                  current: enabled ? root.values.swipe_vertical : "off"
+                  focusRing: root.cursor === "swipe_vertical"
+                  onPicked: function(id) { root.commit("swipe_vertical", id) }
+                }
+                Hint { text: root.verticalHint() }
+              }
+            }
           }
-          Label { visible: root.values.swipe_horizontal !== "workspaces"; text: "Swipe up and down to move between" }
-          Segmented {
-            objectName: "row:swipe_vertical"
-            visible: root.values.swipe_horizontal !== "workspaces"
+          Column {
             width: parent.width
-            model: root.choices.swipe_vertical
-            current: root.values.swipe_vertical
-            focusRing: root.cursor === "swipe_vertical"
-            onPicked: function(id) { root.commit("swipe_vertical", id) }
+            spacing: Style.space(8)
+            Label { text: "FEEL" }
+            Row {
+              objectName: "row:tracking"
+              width: parent.width
+              spacing: Style.space(8)
+              FeelCard {
+                width: (parent.width - Style.space(8)) / 2
+                follow: true
+                title: "Follow fingers"
+                detail: "Drag it; it springs into place when you let go"
+                selected: root.values.tracking === "follow"
+                keyFocus: root.cursor === "tracking" && selected
+                onPicked: root.commit("tracking", "follow")
+              }
+              FeelCard {
+                width: (parent.width - Style.space(8)) / 2
+                follow: false
+                title: "One per swipe"
+                detail: "A flick jumps exactly one window or workspace"
+                selected: root.values.tracking === "step"
+                keyFocus: root.cursor === "tracking" && selected
+                onPicked: root.commit("tracking", "step")
+              }
+            }
           }
           Slider {
             visible: root.values.tracking === "follow"
@@ -850,12 +1005,6 @@ Panel {
             focusRing: root.cursor === "fingers"
             onPicked: function(id) { root.commit("fingers", id) }
           }
-        }
-        Text {
-          visible: root.tab === 1 && root.values.swipes && root.values.tracking === "follow" && root.values.swipe_horizontal === "windows" && root.layoutName !== "scrolling"
-          width: parent.width; wrapMode: Text.WordWrap
-          text: "Window swipes follow your fingers on scrolling workspaces (Super+L toggles a workspace's layout)."
-          color: root.alphaOf(root.fg, 0.5); font.family: root.family; font.pixelSize: Style.font.caption
         }
         // Swipes the user's config already defines for this finger count. Hyprland keeps
         // the first gesture per direction, so the module leaves those directions alone.
@@ -1036,6 +1185,155 @@ Panel {
   }
 
   // ------------------------------------------------------------ components
+
+  // A swipe setup: a trackpad glyph with the axes it uses, its name and what each direction does.
+  component SetupCard: Rectangle {
+    id: sc
+    property var spec: ({})
+    property bool selected: false
+    property bool suggested: false
+    property bool keyFocus: false
+    signal picked()
+    height: scText.implicitHeight + Style.space(20)
+    radius: Style.space(10)
+    color: selected ? root.alphaOf(root.accent, 0.12) : root.alphaOf(root.fg, scMouse.containsMouse ? 0.07 : 0.04)
+    border.width: selected ? 2 : 1
+    border.color: selected ? root.accent : root.alphaOf(root.fg, scMouse.containsMouse ? 0.32 : 0.1)
+    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+    scale: scMouse.pressed ? 0.98 : 1
+    Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+    Rectangle {
+      anchors.fill: parent; anchors.margins: -Style.space(3)
+      radius: parent.radius + Style.space(3)
+      color: "transparent"
+      border.width: 2; border.color: root.alphaOf(root.fg, 0.7)
+      visible: sc.keyFocus
+    }
+    Rectangle {
+      id: pad
+      x: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(40); height: Style.space(30); radius: Style.space(6)
+      color: Qt.rgba(0, 0, 0, 0.3)
+      border.width: 1; border.color: root.alphaOf(root.fg, 0.12)
+      readonly property color line: sc.selected ? root.accent : root.alphaOf(root.fg, 0.85)
+      Rectangle {   // ← →
+        visible: sc.spec.horizontal !== "off"
+        x: Style.space(6); width: parent.width - Style.space(12); height: 2; radius: 1
+        anchors.verticalCenter: parent.verticalCenter
+        color: pad.line
+      }
+      Rectangle {   // ↑ ↓
+        visible: sc.spec.vertical !== "off"
+        y: Style.space(5); height: parent.height - Style.space(10); width: 2; radius: 1
+        anchors.horizontalCenter: parent.horizontalCenter
+        color: sc.spec.horizontal !== "off" ? root.alphaOf(root.fg, 0.85) : pad.line
+      }
+    }
+    Column {
+      id: scText
+      anchors.left: pad.right; anchors.leftMargin: Style.space(12)
+      anchors.right: scRadio.left; anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+      Text {
+        visible: sc.suggested
+        text: "SUGGESTED · " + root.layoutName.toUpperCase() + " LAYOUT"
+        color: root.accent; font.family: root.family; font.pixelSize: Style.font.caption - 1
+        font.weight: Font.Bold; font.letterSpacing: 0.6
+      }
+      Text {
+        width: parent.width; elide: Text.ElideRight
+        text: sc.spec.title || ""
+        color: root.fg; font.family: root.family; font.pixelSize: Style.font.body
+        font.weight: sc.selected ? Font.DemiBold : Font.Normal
+      }
+      Text {
+        width: parent.width; elide: Text.ElideRight
+        text: sc.spec.detail || ""
+        color: root.alphaOf(root.fg, 0.55); font.family: root.family; font.pixelSize: Style.font.caption
+      }
+    }
+    Rectangle {
+      id: scRadio
+      anchors.right: parent.right; anchors.rightMargin: Style.space(12)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(16); height: width; radius: width / 2
+      color: "transparent"
+      border.width: sc.selected ? Style.space(5) : 1.5
+      border.color: sc.selected ? root.accent : root.alphaOf(root.fg, 0.3)
+    }
+    MouseArea { id: scMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; enabled: root.loaded; onClicked: sc.picked() }
+  }
+
+  // A swipe feel: a tiny picture (a dragged line, or one step of three), a name and a line.
+  component FeelCard: Rectangle {
+    id: fc
+    property bool follow: true
+    property string title: ""
+    property string detail: ""
+    property bool selected: false
+    property bool keyFocus: false
+    signal picked()
+    height: fcCol.implicitHeight + Style.space(20)
+    radius: Style.space(10)
+    color: selected ? root.alphaOf(root.accent, 0.12) : root.alphaOf(root.fg, fcMouse.containsMouse ? 0.07 : 0.04)
+    border.width: selected ? 2 : 1
+    border.color: selected ? root.accent : root.alphaOf(root.fg, fcMouse.containsMouse ? 0.32 : 0.1)
+    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+    scale: fcMouse.pressed ? 0.98 : 1
+    Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+    Rectangle {
+      anchors.fill: parent; anchors.margins: -Style.space(3)
+      radius: parent.radius + Style.space(3)
+      color: "transparent"
+      border.width: 2; border.color: root.alphaOf(root.fg, 0.7)
+      visible: fc.keyFocus
+    }
+    Column {
+      id: fcCol
+      x: Style.space(10); y: Style.space(10)
+      width: parent.width - Style.space(20)
+      spacing: Style.space(6)
+      Rectangle {
+        width: parent.width; height: Style.space(20); radius: Style.space(5)
+        color: Qt.rgba(0, 0, 0, 0.3)
+        Rectangle {   // follow: a dragged line with the finger at its end
+          visible: fc.follow
+          x: Style.space(6); width: parent.width * 0.5; height: 2; radius: 1
+          anchors.verticalCenter: parent.verticalCenter
+          color: fc.selected ? root.accent : root.alphaOf(root.fg, 0.6)
+        }
+        Rectangle {
+          visible: fc.follow
+          x: Style.space(6) + parent.width * 0.5 - width / 2; width: Style.space(8); height: width; radius: width / 2
+          anchors.verticalCenter: parent.verticalCenter
+          color: root.fg
+        }
+        Row {   // one per swipe: three stops, the middle one reached
+          visible: !fc.follow
+          anchors.centerIn: parent
+          spacing: Style.space(14)
+          Repeater {
+            model: 3
+            Rectangle {
+              required property int index
+              width: Style.space(8); height: width; radius: width / 2
+              color: index === 1 ? (fc.selected ? root.accent : root.fg) : "transparent"
+              border.width: index === 1 ? 0 : 1.5; border.color: root.alphaOf(root.fg, 0.4)
+            }
+          }
+        }
+      }
+      Text { text: fc.title; color: root.fg; font.family: root.family; font.pixelSize: Style.font.caption + 1; font.weight: fc.selected ? Font.DemiBold : Font.Normal }
+      Text { width: parent.width; wrapMode: Text.WordWrap; text: fc.detail; color: root.alphaOf(root.fg, 0.55); font.family: root.family; font.pixelSize: Style.font.caption }
+    }
+    MouseArea { id: fcMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; enabled: root.loaded; onClicked: fc.picked() }
+  }
+
+  component Hint: Text {
+    width: parent.width; wrapMode: Text.WordWrap
+    color: root.alphaOf(root.fg, 0.5); font.family: root.family; font.pixelSize: Style.font.caption
+  }
 
   component Label: Text {
     objectName: "label"   // revealCursor keeps a control's label in view

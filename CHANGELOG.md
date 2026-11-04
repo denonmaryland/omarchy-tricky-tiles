@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 (2026-11-03)
+
+- Rework the Swipes tab so it says what each swipe does: pick one of three setups (windows and
+  workspaces, workspaces side to side, workspaces up and down), each with a small trackpad
+  glyph, and the one that fits your layout is marked as suggested.
+- "Customise each direction" opens the per-direction controls, each with a one-line description;
+  up and down stays visible (greyed out) while left and right switch workspaces.
+- Feel is two cards with a small picture each: follow fingers, or one per swipe.
+- New helper action `setup` changes both directions at once, so picking a setup reloads Hyprland once.
+
 ## 1.0.1 (2026-11-02)
 
 - Make the main switch suspend both motion and trackpad swipes, restoring the user's configured behavior while keeping settings for re-enabling.

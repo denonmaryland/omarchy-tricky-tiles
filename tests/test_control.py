@@ -1014,6 +1014,20 @@ class SettingsRules(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())['values']['workspace_axis'], 'vertical')
         self.assertEqual(control.read(p)['workspace_axis'], 'vertical')
 
+    def test_a_swipe_setup_sets_both_directions_at_once(self):
+        home = home_with()
+        p = control.paths(home)
+        with mock.patch.object(control, 'paths', return_value=p), \
+                mock.patch.object(control, 'hypr', side_effect=FakeHyprland(p)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for name, pair in control.SETUPS.items():
+                control.main(['setup', name])
+                v = control.read(p)
+                self.assertEqual((v['swipe_horizontal'], v['swipe_vertical']), pair, name)
+            with self.assertRaises(SystemExit):
+                control.main(['setup', 'diagonal'])
+        self.assertEqual(control.read(p)['swipe_vertical'], 'workspaces')
+
     def test_monitor_width_on_a_rotated_panel(self):
         mons = [dict(name='DP-1', width=2560, height=1440, scale=1.0, transform=1, refreshRate=60.0, focused=True)]
         with mock.patch.object(control, 'hypr', return_value=json.dumps(mons)):

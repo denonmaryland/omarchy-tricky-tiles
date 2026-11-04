@@ -108,7 +108,7 @@ test('skipped directions read as a list', () => {
 test('keyboard rows match what each tab shows, top to bottom', () => {
   const body = qml.match(/readonly property var rows: \{([\s\S]*?)\n  \}/)[1];
   const rows = (ctx) => plain(vm.runInNewContext(`(function() {${body}})()`, {
-    loaded: true, installed: true, tab: 0, skipped: [], axisLocked: false, ...ctx,
+    loaded: true, installed: true, tab: 0, skipped: [], axisLocked: false, customShown: false, ...ctx,
     values: { enabled: true, swipes: false, swipe_horizontal: 'windows', tracking: 'follow', ...ctx.values },
     swipeInfo: { list: [], other: '4', otherFree: false, ...ctx.swipeInfo },
     hasConflicts: !!(ctx.swipeInfo && ctx.swipeInfo.list && ctx.swipeInfo.list.length),
@@ -119,7 +119,12 @@ test('keyboard rows match what each tab shows, top to bottom', () => {
   // Swipes off, but the config already uses three fingers and four are free.
   assert.deepEqual(rows({ tab: 1, swipeInfo: { list: [{}], otherFree: true } }), ['enabled', 'tabs', 'swipes', 'fingers', 'use_fingers']);
   assert.deepEqual(rows({ tab: 1, values: { swipes: true }, swipeInfo: { list: [{}] } }),
-                   ['enabled', 'tabs', 'swipes', 'tracking', 'swipe_horizontal', 'swipe_vertical', 'sensitivity', 'fingers']);
+                   ['enabled', 'tabs', 'swipes', 'setup', 'customise', 'tracking', 'sensitivity', 'fingers']);
+  // A custom setup (or Customise opened) adds the per-direction rows; ↑ ↓ goes while ← → takes workspaces.
+  assert.deepEqual(rows({ tab: 1, customShown: true, values: { swipes: true } }),
+                   ['enabled', 'tabs', 'swipes', 'setup', 'customise', 'swipe_horizontal', 'swipe_vertical', 'tracking', 'sensitivity', 'fingers']);
+  assert.deepEqual(rows({ tab: 1, customShown: true, values: { swipes: true, swipe_horizontal: 'workspaces' } }),
+                   ['enabled', 'tabs', 'swipes', 'setup', 'customise', 'swipe_horizontal', 'tracking', 'sensitivity', 'fingers']);
   assert.deepEqual(rows({ tab: 1, installed: false }), ['enabled', 'allow', 'tabs']);
   assert.deepEqual(rows({ tab: 2 }), ['enabled', 'tabs', 'scope', 'workspace_axis', 'power_saver', 'share', 'uninstall']);
 });
@@ -145,6 +150,15 @@ test('nothing changes before settings load, and the preview never plays while cl
   // Only the open handler and playPreview itself start it directly.
   assert.ok(plays.every(l => /function playPreview|if \(opened\)/.test(l)), plays.join('\n'))
 })
+
+test('panel setups match the helper SETUPS', () => {
+  const ours = {};
+  for (const m of qml.matchAll(/\{id: "(\w+)", horizontal: "(\w+)", vertical: "(\w+)"/g)) ours[m[1]] = [m[2], m[3]];
+  const theirs = {};
+  for (const m of control.match(/SETUPS = dict\(([^\n]*)\)/)[1].matchAll(/(\w+)=\('(\w+)', '(\w+)'\)/g)) theirs[m[1]] = [m[2], m[3]];
+  assert.deepEqual(ours, theirs);
+  assert.equal(Object.keys(ours).length, 3);
+});
 
 test('workspace travel is locked whenever swipes move workspaces, like the helper', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'TrickyTiles.qml'), 'utf8')
