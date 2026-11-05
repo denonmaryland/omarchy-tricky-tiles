@@ -30,7 +30,9 @@ def setUpModule():
     # real hyprctl; tests that need Hyprland mock control.hypr with FakeHyprland.
     for patcher in (mock.patch.dict(os.environ, {'OMARCHY_PATH': str(OMARCHY)}),
                     mock.patch.object(control, 'paths', guarded_paths(control.paths)),
-                    mock.patch.object(control, 'hypr', no_hyprctl)):
+                    mock.patch.object(control, 'hypr', no_hyprctl),
+                    # Omarchy 4.5's layout command asks the real hyprctl; tests opt in with a fake.
+                    mock.patch.object(control, 'layout_default_command', lambda: None)):
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
 
@@ -209,6 +211,23 @@ class Values(unittest.TestCase):
         self.assertEqual((a['swipe_horizontal'], a['workspace_axis']), ('windows', 'vertical'))
         self.assertEqual((b['swipe_horizontal'], b['workspace_axis']), ('workspaces', 'horizontal'))
 
+    def test_layout_asks_omarchy_45_first(self):
+        dwindle = home_with()
+        tool = Path(tempfile.mkdtemp()) / 'omarchy-hyprland-workspace-layout-default'
+        tool.write_text('#!/bin/sh\n[ $# -eq 0 ] || exit 9\necho scrolling\n')
+        tool.chmod(0o755)
+        with mock.patch.object(control, 'layout_default_command', lambda: str(tool)):
+            self.assertEqual(control.hypr_layout(control.paths(dwindle)), 'scrolling')
+            tool.write_text('#!/bin/sh\nexit 1\n')   # no answer: the user's files decide
+            self.assertEqual(control.hypr_layout(control.paths(dwindle)), 'dwindle')
+
+    def test_animations_enabled(self):
+        for answer, want in (('{"option": "animations:enabled", "bool": false, "set": true}', False),
+                             ('{"option": "animations:enabled", "bool": true, "set": true}', True),
+                             ('{"option": "animations:enabled", "int": 0}', False), ('', None)):
+            with mock.patch.object(control, 'hypr', lambda *a, answer=answer: answer):
+                self.assertIs(control.animations_enabled(), want, answer)
+
     def test_normalize_horizontal_workspaces(self):
         v = control.fresh()
         v.update(swipes=True, swipe_horizontal='workspaces', swipe_vertical='workspaces', workspace_axis='vertical')
@@ -311,6 +330,44 @@ class Module(unittest.TestCase):
         calls = self.run_lua(self.render(swipes=True, tracking='step', swipe_horizontal='windows', swipe_vertical='workspaces'))
         gestures = [c for c in calls if c.startswith('gesture')]
         self.assertEqual(sorted(g.split('direction=')[1].split(',')[0] for g in gestures), ['down', 'left', 'right', 'up'])
+
+    def test_special_workspace_in_and_out_spring_too(self):
+        # Omarchy 4.5 sets specialWorkspaceIn/Out (its Quake console), which override the parent.
+        leaves = [c for c in self.run_lua(self.render()) if c.startswith('animation')]
+        for leaf in ('specialWorkspace', 'specialWorkspaceIn', 'specialWorkspaceOut'):
+            self.assertTrue(any(f'leaf={leaf},' in c and 'spring=ttSpring' in c and 'style=slidevert' in c
+                                for c in leaves), leaf)
+
+    def with_monitor_workspaces(self, module):
+        """Load the module the way Omarchy 4.5 does: after monitor-workspaces.lua set o.workspaces."""
+        wrapper = module.parent / 'omarchy45.lua'
+        wrapper.write_text('o = { workspaces = { slots = 10 } }\ndofile(%s)\n' % control.lua_str(str(module)))
+        return wrapper
+
+    def test_follow_workspace_swipes_stay_on_the_monitor_with_45(self):
+        module = self.render(swipes=True, swipe_horizontal='windows', swipe_vertical='workspaces', workspace_axis='vertical')
+        old = [c for c in self.run_lua(module) if c.startswith('config')]
+        new = [c for c in self.run_lua(self.with_monitor_workspaces(module)) if c.startswith('config')]
+        self.assertTrue(any('workspace_swipe_use_r=true' in c for c in old))
+        self.assertTrue(any('workspace_swipe_use_r=false' in c for c in new))
+
+    def test_step_workspace_swipes_stay_in_the_monitor_block_with_45(self):
+        module = self.render(swipes=True, tracking='step', swipe_horizontal='workspaces')
+        scenario = module.parent / 's.lua'
+
+        def steps(load, ws_id, deltas=(1, -1)):
+            scenario.write_text('world.workspace = { id = %d }\nnote("start")\n' % ws_id
+                                + ''.join(f'TrickyTiles.workspace_step({d})\n' for d in deltas))
+            out = self.run_lua(load, str(scenario))
+            return [c for c in out[out.index('start') + 1:] if c.startswith('dispatch')]
+
+        omarchy45 = self.with_monitor_workspaces(module)
+        self.assertEqual(steps(omarchy45, 3), ['dispatch {workspace=4}', 'dispatch {workspace=2}'])
+        self.assertEqual(steps(omarchy45, 10), ['dispatch {workspace=9}'])          # 11 is the next monitor's
+        self.assertEqual(steps(omarchy45, 11), ['dispatch {workspace=12}'])         # 10 is the first monitor's
+        self.assertEqual(steps(omarchy45, 1, (-1,)), [])
+        self.assertEqual(steps(omarchy45, -98), ['dispatch {workspace=r+1}', 'dispatch {workspace=r-1}'])   # special
+        self.assertEqual(steps(module, 10), ['dispatch {workspace=r+1}', 'dispatch {workspace=r-1}'])       # 4.0
 
     def test_live_reapply_does_not_duplicate_gestures(self):
         calls = self.run_lua(self.render(swipes=True, swipe_horizontal='windows', swipe_vertical='workspaces'), 'twice')

@@ -48,6 +48,9 @@ Panel {
   property string code: ""
   property string overrideName: ""
   property string layoutName: ""
+  // Hyprland's animations:enabled is off (Omarchy 4.5: `omarchy toggle animations`). The
+  // springs are still configured but nothing animates, so the panel says so.
+  property bool animationsOff: false
   property var draft: ({})
   property var pending: []
   property bool loaded: false
@@ -197,6 +200,7 @@ Panel {
       code = result.code || ""
       overrideName = result.override || ""
       layoutName = result.layout || ""
+      animationsOff = result.animations === false
       installed = result.installed !== false
       loaded = true
       message = result.ok ? "" : result.error
@@ -458,6 +462,7 @@ Panel {
     bar: root.bar
     text: "◫"
     tooltipText: !root.values.enabled ? "Tricky Tiles · off"
+      : root.animationsOff ? "Tricky Tiles · animations are off"
       : "Tricky Tiles · " + (root.overrideName ? "power saver" : root.presets[root.values.preset] ? root.presets[root.values.preset].label : "Custom")
     onPressed: if (!(root.popup && root.popup.commitHover(root))) root.toggle()
   }
@@ -532,6 +537,7 @@ Panel {
               width: parent.width
               elide: Text.ElideRight
               text: !root.values.enabled ? "Off · your config's own motion and swipes"
+                : root.animationsOff ? "Animations are off · springs wait until they are on"
                 : root.overrideName ? "Power saver · using " + (root.presets[root.overrideName] ? root.presets[root.overrideName].label : root.overrideName)
                 : root.presets[root.values.preset] ? root.presets[root.values.preset].caption : "Custom · your own spring"
               color: root.alphaOf(root.fg, 0.55); font.family: root.family; font.pixelSize: Style.font.caption + 1
@@ -568,6 +574,23 @@ Panel {
               color: root.fg; font.family: root.family; font.pixelSize: Style.font.caption + 1
             }
             Pill { text: "Allow"; primary: true; focusRing: root.cursor === "allow"; onClicked: root.allowInstall() }
+          }
+        }
+
+        // ---------- Animations off in Hyprland (not a keyboard row) ----------
+        Rectangle {
+          visible: root.loaded && root.installed && root.values.enabled && root.animationsOff
+          width: parent.width
+          height: animOffText.implicitHeight + Style.space(20)
+          radius: Style.space(12)
+          color: root.alphaOf(root.fg, 0.06)
+          border.width: 1; border.color: root.alphaOf(root.fg, 0.12)
+          Text {
+            id: animOffText
+            x: Style.space(12); y: Style.space(10)
+            width: parent.width - Style.space(24); wrapMode: Text.WordWrap
+            text: "Hyprland's animations are turned off, so windows and workspaces jump instead of springing. Your settings are kept and apply again once animations are back on (omarchy toggle animations on Omarchy 4.5)."
+            color: root.fg; font.family: root.family; font.pixelSize: Style.font.caption + 1
           }
         }
 

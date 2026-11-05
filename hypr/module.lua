@@ -26,6 +26,10 @@ function TT.apply(s)
   anim("windowsMove", { enabled = true, speed = s.speed, spring = "ttSpring" })
   anim("workspaces", { enabled = true, speed = s.speed, spring = "ttSpring", style = s.ws_style })
   anim("specialWorkspace", { enabled = true, speed = s.speed, spring = "ttSpring", style = s.special_style })
+  -- Omarchy 4.5 sets the In/Out children (its Quake console), which override the parent
+  -- leaf, so set them too. Hyprland 0.56.2 already has both leaves (Omarchy 4.0.6 included).
+  anim("specialWorkspaceIn", { enabled = true, speed = s.speed, spring = "ttSpring", style = s.special_style })
+  anim("specialWorkspaceOut", { enabled = true, speed = s.speed, spring = "ttSpring", style = s.special_style })
   if s.focus_fade then
     anim("fadeSwitch", { enabled = true, speed = s.fade_speed, bezier = "ttFade" })
   else
@@ -117,9 +121,38 @@ function TT.step(direction)
   end, { timeout = WARP_MS, type = "oneshot" })
 end
 
+-- Omarchy 4.5's per-monitor workspaces (default/hypr/monitor-workspaces.lua) give every
+-- monitor its own block of o.workspaces.slots ids: 1-10, 11-20, ... There a step stays in
+-- the focused monitor's block, as Super + 1-0 do; Hyprland's r+1 would walk into the next
+-- monitor's block. Without that module (Omarchy 4.0) it is r+1 / r-1, as before.
+local function workspace_slots()
+  local o = rawget(_G, "o")
+  local ws = type(o) == "table" and o.workspaces
+  local slots = type(ws) == "table" and tonumber(ws.slots)
+  return slots and slots > 0 and slots or nil
+end
+
+local function regular_workspace()
+  local ws = hl.get_active_workspace()
+  if ws and not ws.special and (ws.id or 0) > 0 then return ws end
+  local mon = hl.get_active_monitor()
+  ws = mon and mon.active_workspace
+  if ws and not ws.special and (ws.id or 0) > 0 then return ws end
+end
+
 local function workspace_step(delta)
+  local slots = workspace_slots()
+  local ws = slots and regular_workspace()
+  if ws then
+    local target = ws.id + delta
+    local block = math.floor((ws.id - 1) / slots)
+    if target < 1 or math.floor((target - 1) / slots) ~= block then return end
+    hl.dispatch(hl.dsp.focus({ workspace = tostring(target) }))
+    return
+  end
   hl.dispatch(hl.dsp.focus({ workspace = delta > 0 and "r+1" or "r-1" }))
 end
+TT.workspace_step = workspace_step
 
 -- Swipes ----------------------------------------------------------------------
 -- "Follow fingers" uses Hyprland's own trackers (scroll_move for the window
@@ -143,7 +176,10 @@ function TT.register(g)
     local any = (g.horizontal ~= "off" and not skip.horizontal) or (g.vertical == "workspaces" and not skip.vertical)
     if any then hl.config({ gestures = {
       workspace_swipe_distance = g.ws_distance, workspace_swipe_cancel_ratio = 0.3,
-      workspace_swipe_min_speed_to_force = 20, workspace_swipe_use_r = true,
+      workspace_swipe_min_speed_to_force = 20,
+      -- r+1 can enter another monitor's block under Omarchy 4.5's per-monitor workspaces;
+      -- m+1 (Hyprland's default, which Omarchy keeps) only visits this monitor's workspaces.
+      workspace_swipe_use_r = workspace_slots() == nil,
       workspace_swipe_direction_lock = true, scrolling = { move_snap_to_grid = true },
     } }) end
     if g.horizontal == "windows" then

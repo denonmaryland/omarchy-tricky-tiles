@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import tempfile
 import time
@@ -92,8 +93,27 @@ CODE_RE = re.compile(r'^TT1-(\d{2,3})-(\d{1,2})-(\d{1,3})-([01])$')
 
 # ---------------------------------------------------------------- values
 
+LAYOUTS = ('dwindle', 'scrolling', 'floating', 'master')
+
+
+def layout_default_command():
+    """Omarchy 4.5 keeps the default workspace layout outside the user's Hyprland files and
+    reports it with this command (no arguments: print only). None on Omarchy 4.0."""
+    return shutil.which('omarchy-hyprland-workspace-layout-default')
+
+
 def hypr_layout(p):
-    """The user's default tiling layout, read from their Hyprland files (best effort)."""
+    """The user's default tiling layout: Omarchy's answer where it has one (4.5), otherwise
+    read from their Hyprland files (best effort)."""
+    cmd = layout_default_command()
+    if cmd:
+        try:
+            r = subprocess.run([cmd], capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+            answer = r.stdout.strip().splitlines()[-1].strip() if r.returncode == 0 and r.stdout.strip() else ''
+            if answer in LAYOUTS:
+                return answer
+        except (OSError, subprocess.SubprocessError):
+            pass
     for name in ('looknfeel.lua', 'hyprland.lua'):
         try:
             text = (p['hypr_dir'] / name).read_text()
@@ -1002,6 +1022,17 @@ def demo():
     hypr('eval', 'if TrickyTiles and TrickyTiles.demo then TrickyTiles.demo() end')
 
 
+def animations_enabled():
+    """Hyprland's animations:enabled (Omarchy 4.5's `omarchy toggle animations` turns it off).
+    None when Hyprland cannot be asked."""
+    try:
+        answer = json.loads(hypr('getoption', 'animations:enabled', '-j'))
+        value = answer.get('bool', answer.get('int'))
+        return None if value is None else bool(value)
+    except Exception:   # best effort: the panel then shows no note
+        return None
+
+
 def monitor_info():
     try:
         mons = json.loads(hypr('monitors', '-j'))
@@ -1022,7 +1053,7 @@ def save(values, p):
 def report(ok, values, p, error=None, applied=None):
     out = dict(ok=ok, values=values, presets=PRESETS, limits=LIMITS, stock=STOCK, installed=installed(p),
                override=override(p) if values['power_saver'] != 'off' else None, code=encode(values),
-               monitor=monitor_info(), layout=hypr_layout(p))
+               monitor=monitor_info(), layout=hypr_layout(p), animations=animations_enabled())
     # Hints: the user's own swipes per finger count, whether or not ours are on (best effort).
     sources, out['sources_error'] = config_sources(p)
     out['conflicts_by_fingers'] = conflicts_by_fingers(p, sources)

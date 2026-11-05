@@ -37,7 +37,7 @@ Moves start from rest, keep their momentum when you interrupt them, and settle, 
 <table>
 <tr>
 <td width="50%" valign="top"><strong>Momentum, not a jump.</strong><br>With a front-loaded ease-out, the first frame of a full-width switch on a 60 Hz panel covered 50–70% of the distance. With the Spring preset it covers 26–51%, and when the first frame is on time the move starts 1% → 8% → 18% → 30%. Two quick switches glide as one move instead of hitching.</td>
-<td width="50%" valign="top"><strong>Hyprland's own springs.</strong><br>Hyprland 0.56 ships native, closed-form spring curves that keep their velocity when retargeted. Tricky Tiles exposes them as duration and bounce, like SwiftUI, and drives window moves, workspace switches and the special workspace with them.</td>
+<td width="50%" valign="top"><strong>Hyprland's own springs.</strong><br>Hyprland 0.56 ships native, closed-form spring curves that keep their velocity when retargeted. Tricky Tiles exposes them as duration and bounce, like SwiftUI, and drives window moves, workspace switches and the special workspace (scratchpad, and the Quake console on Omarchy 4.5) with them.</td>
 </tr>
 <tr>
 <td width="50%" valign="top"><strong>Swipes that track 1:1.</strong><br><em>Follow fingers</em> uses Hyprland's own trackers (the scrolling layout's window strip, and workspaces), the only way to get true tracking from Lua. Three or four fingers, adjustable finger travel, and your existing swipes are never overridden.</td>
@@ -76,7 +76,13 @@ Moves start from rest, keep their momentum when you interrupt them, and settle, 
 omarchy plugin add https://github.com/denonmaryland/omarchy-tricky-tiles --enable
 ```
 
-Click the ◫ icon in the bar and press **Allow**. Requirements: Omarchy with the Lua Hyprland config and **Hyprland 0.56 or newer** (native spring curves), Python 3, and `wl-clipboard` for share codes (already part of Omarchy).
+Click the ◫ icon in the bar and press **Allow**. Requirements: **Omarchy 4.0.x or 4.5** with the Lua Hyprland config and **Hyprland 0.56 or newer** (native spring curves), Python 3, and `wl-clipboard` for share codes (already part of Omarchy).
+
+On Omarchy 4.5:
+
+- **Per-monitor workspaces.** Each monitor owns its own block of workspaces (1–10, 11–20, …). *One per swipe* stays inside the focused monitor's block and stops at its first and last workspace. *Follow fingers* uses Hyprland's tracker with its default `m` targets (the workspaces on this monitor) instead of `r`; when you swipe past the last one, Hyprland itself may still create the next numbered workspace.
+- **Animations off.** If Hyprland's animations are off (`omarchy toggle animations`), the panel says so; your settings are kept and apply again once animations are back on.
+- **Default layout.** The suggested swipe setup follows the layout from `omarchy hyprland workspace layout default`.
 
 <details>
 <summary><strong>What it changes on your system</strong></summary>
@@ -126,7 +132,7 @@ stiffness = (2π / duration)²        mass = 1
 damping   = 4π (1 − bounce) / duration     →  damping ratio = 1 − bounce
 ```
 
-The springs drive `windowsMove` (window strip steps, swipes, keyboard focus, width toggles), `workspaces` and `specialWorkspace`. The focus fade (`fadeSwitch`) is a state change, so it eases instead. *Follow fingers* uses Hyprland's own trackers (`scroll_move` for the window strip of the scrolling layout, `workspace` for workspaces). Lua cannot move the strip smoothly frame by frame, so this is the only way to get true 1:1 tracking. *One per swipe* runs a small Lua function when the fingers lift.
+The springs drive `windowsMove` (window strip steps, swipes, keyboard focus, width toggles), `workspaces` and `specialWorkspace`, including its `specialWorkspaceIn`/`specialWorkspaceOut` children, which Omarchy 4.5 sets for its Quake console and which would otherwise override the parent. With Tricky Tiles on, the console opens and closes with the spring and the slide style, not Omarchy's own drop-down/retract curves. The focus fade (`fadeSwitch`) is a state change, so it eases instead. *Follow fingers* uses Hyprland's own trackers (`scroll_move` for the window strip of the scrolling layout, `workspace` for workspaces). Lua cannot move the strip smoothly frame by frame, so this is the only way to get true 1:1 tracking. *One per swipe* runs a small Lua function when the fingers lift.
 
 Design rules come from the motion checks on [userinterface.wiki](https://www.userinterface.wiki) ([skills](https://github.com/raphaelsalaja/skills)): springs for gestures and interruptible moves (`spring-for-gestures`, `spring-for-interruptible`), easing for state changes, small overshoot (`physics-subtle-deformation`), one focal point (the arriving window), and moves that arrive well under 300 ms.
 

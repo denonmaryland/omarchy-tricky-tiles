@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.3 (2026-11-05)
+
+Omarchy 4.5 support; Omarchy 4.0.6 keeps working as before.
+
+- Also set `specialWorkspaceIn` and `specialWorkspaceOut`. Omarchy 4.5 sets both for its Quake
+  console, and they override `specialWorkspace`, so the scratchpad and console lost the spring.
+  Hyprland 0.56.2 already has both leaves, so this is the same on 4.0.6.
+- Per-monitor workspaces (Omarchy 4.5, detected through `o.workspaces.slots`): *One per swipe*
+  stays in the focused monitor's block of workspaces instead of `r+1`/`r-1` walking into the next
+  monitor's block; *Follow fingers* turns off `workspace_swipe_use_r` there, so Hyprland's tracker
+  visits this monitor's workspaces. Without the 4.5 module nothing changes.
+- The layout used for the suggested swipe setup asks `omarchy-hyprland-workspace-layout-default`
+  first when it exists (Omarchy 4.5 keeps the default layout there), then reads the Hyprland files
+  as before.
+- When Hyprland's animations are off (Omarchy 4.5's `omarchy toggle animations`), the panel says so
+  in a note, the header and the bar tooltip instead of describing springs that cannot play.
+
 ## 1.0.2 (2026-11-03)
 
 - Rework the Swipes tab so it says what each swipe does: pick one of three setups (windows and
